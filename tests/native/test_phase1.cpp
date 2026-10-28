@@ -153,6 +153,14 @@ void testMultiviewAndQuadRenderer() {
     hit = QuadRenderer::rayIntersectsQuad(origin, missDir, 1.0f, 1.0f, hitDist, u, v);
     assert(!hit);
 
+    // Top grab bar hit test (height = 1.0m, halfH = 0.5m, top bar in [0.42, 0.50])
+    assert(QuadRenderer::isTopBarHit(0.46f, 1.0f, 0.08f));
+    assert(!QuadRenderer::isTopBarHit(0.0f, 1.0f, 0.08f));
+
+    // Diagonal corner-to-corner length calculation
+    float diag = QuadRenderer::computeDiagonalLength(1.0f, 0.6f);
+    assert(std::abs(diag - 1.16619f) < 1e-4f);
+
     std::cout << "[PASS] testMultiviewAndQuadRenderer\n";
 }
 

@@ -298,6 +298,123 @@ class SpatialWindowManager(
         return true
     }
 
+    data class TwoHandResizeSession(
+        val windowId: Int,
+        val initialDistance: Float,
+        val initialWidth: Float,
+        val initialHeight: Float
+    )
+
+    data class RepositionSession(
+        val windowId: Int,
+        val grabStartHandPos: Vector3,
+        val initialWindowPos: Vector3,
+        val initialWidth: Float,
+        val initialHeight: Float
+    )
+
+    private val twoHandResizeSessions = ConcurrentHashMap<Int, TwoHandResizeSession>()
+    private val repositionSessions = ConcurrentHashMap<Int, RepositionSession>()
+
+    /**
+     * Iron Man style two-hand diagonal corner-to-corner pinch & stretch/shrink gesture.
+     */
+    fun startTwoHandDiagonalResize(windowId: Int, initialDistanceMeters: Float): Boolean {
+        val window = windows[windowId] ?: return false
+        if (window.isFullscreen || initialDistanceMeters <= 0.05f) return false
+
+        twoHandResizeSessions[windowId] = TwoHandResizeSession(
+            windowId = windowId,
+            initialDistance = initialDistanceMeters,
+            initialWidth = window.widthMeters,
+            initialHeight = window.heightMeters
+        )
+        setFocusedWindow(windowId)
+        return true
+    }
+
+    fun updateTwoHandDiagonalResize(windowId: Int, currentDistanceMeters: Float): Boolean {
+        val session = twoHandResizeSessions[windowId] ?: return false
+        val window = windows[windowId] ?: return false
+        if (session.initialDistance <= 0.001f) return false
+
+        val scale = (currentDistanceMeters / session.initialDistance).coerceIn(0.2f, 4.0f)
+        window.widthMeters = (session.initialWidth * scale).coerceIn(0.40f, 3.0f)
+        window.heightMeters = (session.initialHeight * scale).coerceIn(0.25f, 2.0f)
+
+        val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
+        val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
+        virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+        return true
+    }
+
+    fun endTwoHandDiagonalResize(windowId: Int) {
+        twoHandResizeSessions.remove(windowId)
+    }
+
+    /**
+     * Top grab bar 3D repositioning.
+     * Grabbing the top of the window moves it in 3D space (X, Y, Z).
+     * Moving it farther/closer dynamically resizes the window due to perspective.
+     */
+    fun startTopBarReposition(windowId: Int, handPos: Vector3): Boolean {
+        val window = windows[windowId] ?: return false
+        if (window.isFullscreen) return false
+
+        repositionSessions[windowId] = RepositionSession(
+            windowId = windowId,
+            grabStartHandPos = handPos,
+            initialWindowPos = window.position,
+            initialWidth = window.widthMeters,
+            initialHeight = window.heightMeters
+        )
+        setFocusedWindow(windowId)
+        return true
+    }
+
+    fun updateTopBarReposition(
+        windowId: Int,
+        currentHandPos: Vector3,
+        enablePerspectiveScaling: Boolean = true
+    ): Boolean {
+        val session = repositionSessions[windowId] ?: return false
+        val window = windows[windowId] ?: return false
+
+        // Compute 3D delta from hand movement
+        val deltaX = currentHandPos.x - session.grabStartHandPos.x
+        val deltaY = currentHandPos.y - session.grabStartHandPos.y
+        val deltaZ = currentHandPos.z - session.grabStartHandPos.z
+
+        // Update 3D position
+        val newZ = (session.initialWindowPos.z + deltaZ).coerceIn(-4.0f, -0.4f)
+        window.position = Vector3(
+            session.initialWindowPos.x + deltaX,
+            session.initialWindowPos.y + deltaY,
+            newZ
+        )
+
+        // Perspective scaling: as window moves farther, scale physical dimensions
+        // so apparent readability and angular scale stay proportional
+        if (enablePerspectiveScaling) {
+            val initialDist = Math.abs(session.initialWindowPos.z).coerceAtLeast(0.4f)
+            val currentDist = Math.abs(window.position.z).coerceAtLeast(0.4f)
+            val perspectiveRatio = currentDist / initialDist
+
+            window.widthMeters = (session.initialWidth * perspectiveRatio).coerceIn(0.40f, 3.0f)
+            window.heightMeters = (session.initialHeight * perspectiveRatio).coerceIn(0.25f, 2.0f)
+
+            val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
+            val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
+            virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+        }
+
+        return true
+    }
+
+    fun endTopBarReposition(windowId: Int) {
+        repositionSessions.remove(windowId)
+    }
+
     private fun rotateVector(v: Vector3, q: Quaternion): Vector3 {
         // v' = v + 2 * r x (r x v + w * v)
         val tx = 2f * (q.y * v.z - q.z * v.y)

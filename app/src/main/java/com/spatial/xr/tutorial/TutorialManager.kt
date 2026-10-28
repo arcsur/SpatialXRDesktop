@@ -45,9 +45,9 @@ class TutorialManager(
         ),
         TutorialStep(
             topic = TutorialTopic.RESIZE_MOVE,
-            headline = "4-Corner 3D Window Resizing",
-            description = "Every spatial window has 4 interactive corner grab handles. Pinch any corner and drag outwards or inwards to dynamically reflow app layouts.",
-            interactionHint = "Drag corner handles to expand up to 3 meters wide."
+            headline = "Iron Man Diagonal Stretch & 3D Move",
+            description = "Pinch opposite diagonal corners with two hands and pull apart or push together to stretch or shrink windows (Iron Man style). Pinch the top titlebar to freely reposition windows in 3D space—pushing farther away automatically scales window size for perspective.",
+            interactionHint = "Pinch top-left & bottom-right to stretch; grab top bar to move in 3D."
         ),
         TutorialStep(
             topic = TutorialTopic.PALM_DOCK,

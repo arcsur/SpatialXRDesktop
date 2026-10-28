@@ -90,4 +90,80 @@ class Phase4WindowManagerTest {
         val missHit = WindowInputInjector.raycastQuad(missRay, 1.0f, 1.0f, 1280, 720)
         assertFalse(missHit.isHit)
     }
+
+    @Test
+    fun testIronManTwoHandDiagonalStretchAndShrink() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.hologram", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+
+        // Initial diagonal distance between opposing corner pinches
+        val initialDist = 1.166f // sqrt(1.0^2 + 0.6^2) ~ 1.166m
+        val started = wm.startTwoHandDiagonalResize(1, initialDist)
+        assertTrue(started)
+
+        // Stretch hands apart by 1.5x (to 1.749m)
+        val stretched = wm.updateTwoHandDiagonalResize(1, initialDist * 1.5f)
+        assertTrue(stretched)
+        assertEquals(1.5f, win.widthMeters, 1e-3f)
+        assertEquals(0.9f, win.heightMeters, 1e-3f)
+
+        // Shrink hands together to 0.5x (to 0.583m)
+        val shrunk = wm.updateTwoHandDiagonalResize(1, initialDist * 0.5f)
+        assertTrue(shrunk)
+        assertEquals(0.5f, win.widthMeters, 1e-3f)
+        assertEquals(0.3f, win.heightMeters, 1e-3f)
+
+        wm.endTwoHandDiagonalResize(1)
+    }
+
+    @Test
+    fun testTopBar3DRepositioningWithPerspectiveScaling() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.window", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f) // Standard 1.2m viewing distance
+
+        // Pinch top bar at hand position (0, 0.3, -1.2)
+        val handStart = Vector3(0f, 0.3f, -1.2f)
+        val grabStarted = wm.startTopBarReposition(1, handStart)
+        assertTrue(grabStarted)
+
+        // Push window farther away from -1.2m to -2.4m (double distance) and shift slightly right
+        val handFar = Vector3(0.4f, 0.4f, -2.4f)
+        val updated = wm.updateTopBarReposition(1, handFar, enablePerspectiveScaling = true)
+        assertTrue(updated)
+
+        // Position moved in 3D
+        assertEquals(0.4f, win.position.x, 1e-4f)
+        assertEquals(0.1f, win.position.y, 1e-4f)
+        assertEquals(-2.4f, win.position.z, 1e-4f)
+
+        // Perspective scaling: distance doubled from 1.2m to 2.4m, dimensions doubled to maintain angular readability
+        assertEquals(2.0f, win.widthMeters, 1e-3f)
+        assertEquals(1.2f, win.heightMeters, 1e-3f)
+
+        // Pull window closer to -0.6m (half distance)
+        val handClose = Vector3(0f, 0.3f, -0.6f)
+        wm.updateTopBarReposition(1, handClose, enablePerspectiveScaling = true)
+        assertEquals(-0.6f, win.position.z, 1e-4f)
+        assertEquals(0.5f, win.widthMeters, 1e-3f)
+        assertEquals(0.3f, win.heightMeters, 1e-3f)
+
+        wm.endTopBarReposition(1)
+    }
+
+    @Test
+    fun testTopBarHitDetection() {
+        // Quad 1.0m x 1.0m (halfH = 0.5m). Top 0.08m bar is Y in [0.42m, 0.50m]
+        // Ray aimed near top edge (Y = +0.46m)
+        val topRay = WindowInputInjector.Ray(0f, 0.46f, 2f, 0f, 0f, -1f)
+        val topHit = WindowInputInjector.raycastQuad(topRay, 1.0f, 1.0f, 1280, 720)
+        assertTrue(topHit.isHit)
+        assertTrue(WindowInputInjector.isTopGrabBarHit(topHit, 1.0f, 0.08f))
+
+        // Ray aimed at center (Y = 0.0m)
+        val centerRay = WindowInputInjector.Ray(0f, 0f, 2f, 0f, 0f, -1f)
+        val centerHit = WindowInputInjector.raycastQuad(centerRay, 1.0f, 1.0f, 1280, 720)
+        assertTrue(centerHit.isHit)
+        assertFalse(WindowInputInjector.isTopGrabBarHit(centerHit, 1.0f, 0.08f))
+    }
 }

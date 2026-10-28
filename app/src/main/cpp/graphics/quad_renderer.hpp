@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <cmath>
 
 namespace spatial::graphics {
 
@@ -36,6 +37,17 @@ public:
         float& hitU,
         float& hitV
     );
+
+    // Top grab bar hit testing for 3D window translation
+    static bool isTopBarHit(float localY, float height, float barThickness = 0.08f) {
+        float halfH = height * 0.5f;
+        return (localY >= (halfH - barThickness) && localY <= (halfH + 0.02f));
+    }
+
+    // Diagonal corner-to-corner length calculation for two-hand pinch stretch
+    static float computeDiagonalLength(float width, float height) {
+        return std::sqrt(width * width + height * height);
+    }
 };
 
 } // namespace spatial::graphics

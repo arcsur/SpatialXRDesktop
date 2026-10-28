@@ -68,6 +68,16 @@ class WindowInputInjector {
             )
         }
 
+        fun isTopGrabBarHit(
+            hitResult: HitResult,
+            quadHeightMeters: Float,
+            barThicknessMeters: Float = 0.08f
+        ): Boolean {
+            if (!hitResult.isHit) return false
+            val halfH = quadHeightMeters * 0.5f
+            return hitResult.localY >= (halfH - barThicknessMeters)
+        }
+
         fun createMotionEvent(
             action: Int,
             pixelX: Float,
