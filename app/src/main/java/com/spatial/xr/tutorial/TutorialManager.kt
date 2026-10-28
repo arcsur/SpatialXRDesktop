@@ -45,9 +45,9 @@ class TutorialManager(
         ),
         TutorialStep(
             topic = TutorialTopic.RESIZE_MOVE,
-            headline = "Iron Man Diagonal Stretch & 3D Move",
-            description = "Pinch opposite diagonal corners with two hands and pull apart or push together to stretch or shrink windows (Iron Man style). Pinch the top titlebar to freely reposition windows in 3D space—pushing farther away automatically scales window size for perspective.",
-            interactionHint = "Pinch top-left & bottom-right to stretch; grab top bar to move in 3D."
+            headline = "Iron Man 3D Window Manipulation",
+            description = "Pinch opposing diagonal corners with two hands to simultaneously resize, reposition in 3D space, and angle horizontally so one side is closer or farther. Pinch the top titlebar to reposition with automatic perspective scaling.",
+            interactionHint = "Pinch diagonal corners with both hands to resize, reposition, and angle in 3D."
         ),
         TutorialStep(
             topic = TutorialTopic.PALM_DOCK,

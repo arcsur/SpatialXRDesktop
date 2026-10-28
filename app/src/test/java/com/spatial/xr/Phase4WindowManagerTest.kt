@@ -117,6 +117,52 @@ class Phase4WindowManagerTest {
     }
 
     @Test
+    fun testIronManSimultaneousResizeRepositionAndHorizontalAngling() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.ironman", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        // Hand 1 at top-left (-0.5, 0.3, -1.2), Hand 2 at bottom-right (0.5, -0.3, -1.2)
+        val h1Start = Vector3(-0.5f, 0.3f, -1.2f)
+        val h2Start = Vector3(0.5f, -0.3f, -1.2f)
+
+        val started = wm.startTwoHandDiagonalTransform(1, h1Start, h2Start)
+        assertTrue(started)
+
+        // Simultaneous manipulation:
+        // 1. Move midpoint by (+0.2, +0.1, -0.5) -> new center at (0.2, 0.1, -1.7)
+        // 2. Stretch diagonal distance
+        // 3. Push right hand deeper in Z, pull left hand closer -> horizontal angle tilt
+        val h1Curr = Vector3(-0.55f, 0.55f, -1.3f)
+        val h2Curr = Vector3(0.95f, -0.35f, -2.1f)
+
+        val updated = wm.updateTwoHandDiagonalTransform(1, h1Curr, h2Curr)
+        assertTrue(updated)
+
+        // 1. Verify 3D repositioning
+        assertEquals(0.2f, win.position.x, 1e-4f)
+        assertEquals(0.1f, win.position.y, 1e-4f)
+        assertEquals(-1.7f, win.position.z, 1e-4f)
+
+        // 2. Verify resizing (distance stretched)
+        assertTrue(win.widthMeters > 1.3f)
+        assertTrue(win.heightMeters > 0.8f)
+
+        // 3. Verify horizontal angling (yaw rotation)
+        // Right vector (1, 0, 0) rotated by window orientation:
+        val rotatedRight = wm.rotateVector(Vector3(1f, 0f, 0f), win.orientation)
+        // Right side should be angled deeper in Z (negative Z)
+        assertTrue(rotatedRight.z < -0.1f)
+
+        // Left vector (-1, 0, 0) rotated by window orientation:
+        val rotatedLeft = wm.rotateVector(Vector3(-1f, 0f, 0f), win.orientation)
+        // Left side should be angled closer to user (positive Z)
+        assertTrue(rotatedLeft.z > 0.1f)
+
+        wm.endTwoHandDiagonalTransform(1)
+    }
+
+    @Test
     fun testTopBar3DRepositioningWithPerspectiveScaling() {
         val wm = SpatialWindowManager()
         val win = wm.createWindow(1, "com.example.window", 101, widthMeters = 1.0f, heightMeters = 0.6f)

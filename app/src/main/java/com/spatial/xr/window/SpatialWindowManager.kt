@@ -32,8 +32,29 @@ class SpatialWindowManager(
     }
 
     data class Quaternion(val w: Float, val x: Float, val y: Float, val z: Float) {
+        fun multiply(other: Quaternion): Quaternion {
+            return Quaternion(
+                w = w * other.w - x * other.x - y * other.y - z * other.z,
+                x = w * other.x + x * other.w + y * other.z - z * other.y,
+                y = w * other.y - x * other.z + y * other.w + z * other.x,
+                z = w * other.z + x * other.y - y * other.x + z * other.w
+            )
+        }
+
         companion object {
             val IDENTITY = Quaternion(1f, 0f, 0f, 0f)
+
+            fun fromAxisAngle(axis: Vector3, angleRadians: Float): Quaternion {
+                val norm = axis.normalized()
+                val halfAngle = angleRadians * 0.5f
+                val s = sin(halfAngle)
+                return Quaternion(
+                    w = cos(halfAngle),
+                    x = norm.x * s,
+                    y = norm.y * s,
+                    z = norm.z * s
+                )
+            }
 
             fun slerp(q1: Quaternion, q2: Quaternion, t: Float): Quaternion {
                 var dot = q1.w * q2.w + q1.x * q2.x + q1.y * q2.y + q1.z * q2.z
@@ -302,7 +323,15 @@ class SpatialWindowManager(
         val windowId: Int,
         val initialDistance: Float,
         val initialWidth: Float,
-        val initialHeight: Float
+        val initialHeight: Float,
+        val initialHand1Pos: Vector3 = Vector3(0f, 0f, 0f),
+        val initialHand2Pos: Vector3 = Vector3(0f, 0f, 0f),
+        val isHand1Left: Boolean = true,
+        val initialMidpoint: Vector3 = Vector3(0f, 0f, 0f),
+        val initialYawAngle: Float = 0f,
+        val initialWindowPos: Vector3 = Vector3(0f, 0f, -1.2f),
+        val initialOrientation: Quaternion = Quaternion.IDENTITY,
+        val has3DTransform: Boolean = false
     )
 
     data class RepositionSession(
@@ -317,7 +346,128 @@ class SpatialWindowManager(
     private val repositionSessions = ConcurrentHashMap<Int, RepositionSession>()
 
     /**
-     * Iron Man style two-hand diagonal corner-to-corner pinch & stretch/shrink gesture.
+     * Iron Man style two-hand diagonal corner-to-corner pinch & transform.
+     * Simultaneously resizes, repositions in 3D space, and adjusts horizontal yaw angle.
+     */
+    fun startTwoHandDiagonalTransform(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean {
+        val window = windows[windowId] ?: return false
+        if (window.isFullscreen) return false
+
+        val dx = hand2Pos.x - hand1Pos.x
+        val dy = hand2Pos.y - hand1Pos.y
+        val dz = hand2Pos.z - hand1Pos.z
+        val initialDistance = sqrt(dx * dx + dy * dy + dz * dz)
+        if (initialDistance <= 0.05f) return false
+
+        val isHand1Left = hand1Pos.x <= hand2Pos.x
+        val leftHand = if (isHand1Left) hand1Pos else hand2Pos
+        val rightHand = if (isHand1Left) hand2Pos else hand1Pos
+
+        val initialMidpoint = Vector3(
+            (hand1Pos.x + hand2Pos.x) * 0.5f,
+            (hand1Pos.y + hand2Pos.y) * 0.5f,
+            (hand1Pos.z + hand2Pos.z) * 0.5f
+        )
+        val initialYawAngle = kotlin.math.atan2(
+            rightHand.z - leftHand.z,
+            rightHand.x - leftHand.x
+        )
+
+        twoHandResizeSessions[windowId] = TwoHandResizeSession(
+            windowId = windowId,
+            initialDistance = initialDistance,
+            initialWidth = window.widthMeters,
+            initialHeight = window.heightMeters,
+            initialHand1Pos = hand1Pos,
+            initialHand2Pos = hand2Pos,
+            isHand1Left = isHand1Left,
+            initialMidpoint = initialMidpoint,
+            initialYawAngle = initialYawAngle,
+            initialWindowPos = window.position,
+            initialOrientation = window.orientation,
+            has3DTransform = true
+        )
+        setFocusedWindow(windowId)
+        return true
+    }
+
+    fun updateTwoHandDiagonalTransform(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean {
+        val session = twoHandResizeSessions[windowId] ?: return false
+        val window = windows[windowId] ?: return false
+        if (session.initialDistance <= 0.001f) return false
+
+        val dx = hand2Pos.x - hand1Pos.x
+        val dy = hand2Pos.y - hand1Pos.y
+        val dz = hand2Pos.z - hand1Pos.z
+        val currentDistance = sqrt(dx * dx + dy * dy + dz * dz)
+
+        // 1. Resize (scale width & height proportionally)
+        val scale = (currentDistance / session.initialDistance).coerceIn(0.2f, 4.0f)
+        window.widthMeters = (session.initialWidth * scale).coerceIn(0.40f, 3.0f)
+        window.heightMeters = (session.initialHeight * scale).coerceIn(0.25f, 2.0f)
+
+        // 2. 3D Repositioning (translate based on midpoint movement)
+        val currentMidpoint = Vector3(
+            (hand1Pos.x + hand2Pos.x) * 0.5f,
+            (hand1Pos.y + hand2Pos.y) * 0.5f,
+            (hand1Pos.z + hand2Pos.z) * 0.5f
+        )
+        val deltaX = currentMidpoint.x - session.initialMidpoint.x
+        val deltaY = currentMidpoint.y - session.initialMidpoint.y
+        val deltaZ = currentMidpoint.z - session.initialMidpoint.z
+
+        val newZ = (session.initialWindowPos.z + deltaZ).coerceIn(-4.0f, -0.4f)
+        window.position = Vector3(
+            session.initialWindowPos.x + deltaX,
+            session.initialWindowPos.y + deltaY,
+            newZ
+        )
+
+        // 3. Horizontal yaw angle adjustment (adjusts horizontal tilt so one side is further/closer)
+        val leftHand = if (session.isHand1Left) hand1Pos else hand2Pos
+        val rightHand = if (session.isHand1Left) hand2Pos else hand1Pos
+        val currentYawAngle = kotlin.math.atan2(
+            rightHand.z - leftHand.z,
+            rightHand.x - leftHand.x
+        )
+        val deltaYaw = session.initialYawAngle - currentYawAngle
+        val rotQ = Quaternion.fromAxisAngle(Vector3(0f, 1f, 0f), deltaYaw)
+        window.orientation = rotQ.multiply(session.initialOrientation)
+
+        val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
+        val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
+        virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+
+        return true
+    }
+
+    fun endTwoHandDiagonalTransform(windowId: Int) {
+        twoHandResizeSessions.remove(windowId)
+    }
+
+    // Overloads for convenience / backward compatibility
+    fun startTwoHandDiagonalResize(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean = startTwoHandDiagonalTransform(windowId, hand1Pos, hand2Pos)
+
+    fun updateTwoHandDiagonalResize(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean = updateTwoHandDiagonalTransform(windowId, hand1Pos, hand2Pos)
+
+    /**
+     * Legacy distance-only resize overload.
      */
     fun startTwoHandDiagonalResize(windowId: Int, initialDistanceMeters: Float): Boolean {
         val window = windows[windowId] ?: return false
@@ -327,7 +477,8 @@ class SpatialWindowManager(
             windowId = windowId,
             initialDistance = initialDistanceMeters,
             initialWidth = window.widthMeters,
-            initialHeight = window.heightMeters
+            initialHeight = window.heightMeters,
+            has3DTransform = false
         )
         setFocusedWindow(windowId)
         return true
@@ -349,7 +500,7 @@ class SpatialWindowManager(
     }
 
     fun endTwoHandDiagonalResize(windowId: Int) {
-        twoHandResizeSessions.remove(windowId)
+        endTwoHandDiagonalTransform(windowId)
     }
 
     /**
@@ -415,7 +566,7 @@ class SpatialWindowManager(
         repositionSessions.remove(windowId)
     }
 
-    private fun rotateVector(v: Vector3, q: Quaternion): Vector3 {
+    fun rotateVector(v: Vector3, q: Quaternion): Vector3 {
         // v' = v + 2 * r x (r x v + w * v)
         val tx = 2f * (q.y * v.z - q.z * v.y)
         val ty = 2f * (q.z * v.x - q.x * v.z)

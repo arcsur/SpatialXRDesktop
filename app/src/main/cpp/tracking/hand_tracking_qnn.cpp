@@ -155,4 +155,55 @@ bool HandTrackingQnn::computeTwoHandScale(
     return true;
 }
 
+bool HandTrackingQnn::computeTwoHandTransform(
+    const std::array<float, 3>& initHand1,
+    const std::array<float, 3>& initHand2,
+    const std::array<float, 3>& currHand1,
+    const std::array<float, 3>& currHand2,
+    TwoHandTransform& outTransform
+) {
+    float initDx = initHand2[0] - initHand1[0];
+    float initDy = initHand2[1] - initHand1[1];
+    float initDz = initHand2[2] - initHand1[2];
+    float initDist = std::sqrt(initDx * initDx + initDy * initDy + initDz * initDz);
+    if (initDist <= 0.001f) return false;
+
+    float currDx = currHand2[0] - currHand1[0];
+    float currDy = currHand2[1] - currHand1[1];
+    float currDz = currHand2[2] - currHand1[2];
+    float currDist = std::sqrt(currDx * currDx + currDy * currDy + currDz * currDz);
+
+    outTransform.scaleFactor = currDist / initDist;
+
+    // Translation delta from midpoint shift
+    std::array<float, 3> initMid = {
+        (initHand1[0] + initHand2[0]) * 0.5f,
+        (initHand1[1] + initHand2[1]) * 0.5f,
+        (initHand1[2] + initHand2[2]) * 0.5f
+    };
+    std::array<float, 3> currMid = {
+        (currHand1[0] + currHand2[0]) * 0.5f,
+        (currHand1[1] + currHand2[1]) * 0.5f,
+        (currHand1[2] + currHand2[2]) * 0.5f
+    };
+    outTransform.translationDelta = {
+        currMid[0] - initMid[0],
+        currMid[1] - initMid[1],
+        currMid[2] - initMid[2]
+    };
+
+    // Yaw rotation delta in XZ plane: positive yaw turns right side further (-Z) and left side closer (+Z)
+    bool hand1IsLeft = initHand1[0] <= initHand2[0];
+    const auto& initLeft = hand1IsLeft ? initHand1 : initHand2;
+    const auto& initRight = hand1IsLeft ? initHand2 : initHand1;
+    const auto& currLeft = hand1IsLeft ? currHand1 : currHand2;
+    const auto& currRight = hand1IsLeft ? currHand2 : currHand1;
+
+    float initAngle = std::atan2(initRight[2] - initLeft[2], initRight[0] - initLeft[0]);
+    float currAngle = std::atan2(currRight[2] - currLeft[2], currRight[0] - currLeft[0]);
+    outTransform.yawDeltaRadians = initAngle - currAngle;
+
+    return true;
+}
+
 } // namespace spatial::tracking

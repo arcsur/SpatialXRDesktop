@@ -115,6 +115,23 @@ void testTwoHandScaleAndLookAtPalm() {
     assert(!notLooking);
 
     std::cout << "[PASS] testTwoHandScaleAndLookAtPalm\n";
+
+    // Iron Man Two-Hand Simultaneous Transform (Scale, 3D Translation, and Yaw Angling)
+    std::array<float, 3> initH1 = {-0.5f, 0.2f, -1.2f};
+    std::array<float, 3> initH2 = { 0.5f, -0.2f, -1.2f};
+    // Move hands: stretch apart 1.5x, translate midpoint by (+0.2, +0.1, -0.4), angle right hand deeper
+    std::array<float, 3> currH1 = {-0.55f, 0.3f, -1.2f};
+    std::array<float, 3> currH2 = { 0.95f, -0.1f, -2.0f};
+
+    HandTrackingQnn::TwoHandTransform tf;
+    bool tfOk = HandTrackingQnn::computeTwoHandTransform(initH1, initH2, currH1, currH2, tf);
+    assert(tfOk);
+    assert(tf.scaleFactor > 1.4f); // Expanded diagonal distance
+    assert(std::abs(tf.translationDelta[0] - 0.2f) < 1e-4f); // Midpoint X shifted from 0.0 to 0.2
+    assert(std::abs(tf.translationDelta[1] - 0.1f) < 1e-4f); // Midpoint Y shifted from 0.0 to 0.1
+    assert(tf.translationDelta[2] < -0.3f); // Moved deeper in Z
+    assert(tf.yawDeltaRadians > 0.3f); // Right hand pushed deeper -> positive yaw angle
+
 }
 
 #ifndef SPATIAL_COMBINED_TEST_RUNNER

@@ -161,6 +161,16 @@ void testMultiviewAndQuadRenderer() {
     float diag = QuadRenderer::computeDiagonalLength(1.0f, 0.6f);
     assert(std::abs(diag - 1.16619f) < 1e-4f);
 
+    // Yaw angle calculation between two points in XZ plane
+    float yaw = QuadRenderer::computeYawAngle(-0.5f, -1.2f, 0.5f, -1.2f);
+    assert(std::abs(yaw) < 1e-4f); // Horizontal = 0 radians
+
+    // Midpoint calculation between two 3D points
+    auto mid = QuadRenderer::computeMidpoint({-0.4f, 0.2f, -1.0f}, {0.6f, 0.4f, -1.4f});
+    assert(std::abs(mid[0] - 0.1f) < 1e-4f);
+    assert(std::abs(mid[1] - 0.3f) < 1e-4f);
+    assert(std::abs(mid[2] - (-1.2f)) < 1e-4f);
+
     std::cout << "[PASS] testMultiviewAndQuadRenderer\n";
 }
 

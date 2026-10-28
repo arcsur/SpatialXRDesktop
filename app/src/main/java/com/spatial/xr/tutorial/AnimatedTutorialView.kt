@@ -134,54 +134,68 @@ class AnimatedTutorialView @JvmOverloads constructor(
     }
 
     private fun drawResizeMoveAnimation(canvas: Canvas, cx: Float, cy: Float) {
-        // Window expands and contracts with sin wave
         val scale = 0.85f + 0.3f * sin(animationProgress * 2 * Math.PI.toFloat())
         val baseW = 180f * scale
         val baseH = 110f * scale
 
-        // Depth offset animation simulating moving farther/closer
+        // Depth offset and horizontal angle skew simulating Iron Man 3D repositioning and angling
         val depthZOffset = 25f * sin(animationProgress * 2 * Math.PI.toFloat())
-        val rect = RectF(
-            cx - baseW * 0.5f,
-            cy - baseH * 0.5f + depthZOffset,
-            cx + baseW * 0.5f,
-            cy + baseH * 0.5f + depthZOffset
-        )
+        val yawTilt = 18f * sin(animationProgress * 2 * Math.PI.toFloat()) // Horizontal tilt: one edge larger/closer, other smaller/further
+
+        val leftX = cx - baseW * 0.5f
+        val rightX = cx + baseW * 0.5f
+        val centerY = cy + depthZOffset
+        val leftHalfH = (baseH * 0.5f) - yawTilt
+        val rightHalfH = (baseH * 0.5f) + yawTilt
+
+        val tl = Pair(leftX, centerY - leftHalfH)
+        val tr = Pair(rightX, centerY - rightHalfH)
+        val br = Pair(rightX, centerY + rightHalfH)
+        val bl = Pair(leftX, centerY + leftHalfH)
+
+        val windowPath = Path().apply {
+            moveTo(tl.first, tl.second)
+            lineTo(tr.first, tr.second)
+            lineTo(br.first, br.second)
+            lineTo(bl.first, bl.second)
+            close()
+        }
 
         // Window surface
         paint.style = Paint.Style.FILL
         paint.color = Color.parseColor("#1E2138")
-        canvas.drawRoundRect(rect, 20f, 20f, paint)
+        canvas.drawPath(windowPath, paint)
 
         // Top grab bar for 3D repositioning
-        val topBarRect = RectF(rect.left + 20f, rect.top + 6f, rect.right - 20f, rect.top + 20f)
+        val topBarPath = Path().apply {
+            moveTo(tl.first + 15f, tl.second + 6f)
+            lineTo(tr.first - 15f, tr.second + 6f)
+            lineTo(tr.first - 15f, tr.second + 20f)
+            lineTo(tl.first + 15f, tl.second + 20f)
+            close()
+        }
         paint.color = Color.parseColor("#3949AB")
-        canvas.drawRoundRect(topBarRect, 8f, 8f, paint)
+        canvas.drawPath(topBarPath, paint)
 
         // Top grab bar handle pill
         paint.color = colorCyan
-        val handleW = 40f
-        canvas.drawRoundRect(cx - handleW * 0.5f, rect.top + 9f, cx + handleW * 0.5f, rect.top + 17f, 4f, 4f, paint)
+        val handleW = 36f
+        val topMidY = (tl.second + tr.second) * 0.5f + 12f
+        canvas.drawRoundRect(cx - handleW * 0.5f, topMidY - 4f, cx + handleW * 0.5f, topMidY + 4f, 4f, 4f, paint)
 
         // Window frame
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f
         paint.color = colorCyan
-        canvas.drawRoundRect(rect, 20f, 20f, paint)
+        canvas.drawPath(windowPath, paint)
 
         // Diagonal stretch dashed guideline between Top-Left and Bottom-Right
         paint.strokeWidth = 2f
         paint.color = colorMagenta
-        canvas.drawLine(rect.left, rect.top, rect.right, rect.bottom, paint)
+        canvas.drawLine(tl.first, tl.second, br.first, br.second, paint)
 
         // 4 glowing corner grab handles
-        val corners = listOf(
-            Pair(rect.left, rect.top),
-            Pair(rect.right, rect.top),
-            Pair(rect.left, rect.bottom),
-            Pair(rect.right, rect.bottom)
-        )
-
+        val corners = listOf(tl, tr, bl, br)
         for ((x, y) in corners) {
             paint.style = Paint.Style.FILL
             paint.color = colorGold
@@ -193,15 +207,19 @@ class AnimatedTutorialView @JvmOverloads constructor(
         }
 
         // Two-hand pinch indicators at opposing diagonal corners (Iron Man gesture)
+        // Indicator size scales slightly with perspective (closer hand appears larger)
+        val leftRadius = 16f - yawTilt * 0.3f
+        val rightRadius = 16f + yawTilt * 0.3f
+
         paint.style = Paint.Style.FILL
         paint.color = colorMagenta
-        canvas.drawCircle(rect.left, rect.top, 16f, paint)     // Left hand pinch
-        canvas.drawCircle(rect.right, rect.bottom, 16f, paint) // Right hand pinch
+        canvas.drawCircle(tl.first, tl.second, leftRadius, paint)
+        canvas.drawCircle(br.first, br.second, rightRadius, paint)
         paint.style = Paint.Style.STROKE
         paint.color = Color.WHITE
         paint.strokeWidth = 3f
-        canvas.drawCircle(rect.left, rect.top, 16f, paint)
-        canvas.drawCircle(rect.right, rect.bottom, 16f, paint)
+        canvas.drawCircle(tl.first, tl.second, leftRadius, paint)
+        canvas.drawCircle(br.first, br.second, rightRadius, paint)
     }
 
     private fun drawPalmDockAnimation(canvas: Canvas, cx: Float, cy: Float) {

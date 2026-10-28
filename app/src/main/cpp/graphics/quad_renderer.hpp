@@ -48,6 +48,23 @@ public:
     static float computeDiagonalLength(float width, float height) {
         return std::sqrt(width * width + height * height);
     }
+
+    // Compute horizontal yaw angle in radians between two points in XZ plane
+    static float computeYawAngle(float x1, float z1, float x2, float z2) {
+        return std::atan2(z2 - z1, x2 - x1);
+    }
+
+    // Compute 3D midpoint between two points
+    static std::array<float, 3> computeMidpoint(
+        const std::array<float, 3>& p1,
+        const std::array<float, 3>& p2
+    ) {
+        return {
+            (p1[0] + p2[0]) * 0.5f,
+            (p1[1] + p2[1]) * 0.5f,
+            (p1[2] + p2[2]) * 0.5f
+        };
+    }
 };
 
 } // namespace spatial::graphics

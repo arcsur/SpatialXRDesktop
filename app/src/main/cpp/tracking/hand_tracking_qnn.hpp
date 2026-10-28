@@ -96,6 +96,21 @@ public:
         float& outScaleFactor
     );
 
+    // Iron Man Two-Hand Simultaneous 3D Transform: Scale, Translation, and Yaw Angling
+    struct TwoHandTransform {
+        float scaleFactor{1.0f};
+        std::array<float, 3> translationDelta{0.0f, 0.0f, 0.0f};
+        float yawDeltaRadians{0.0f};
+    };
+
+    static bool computeTwoHandTransform(
+        const std::array<float, 3>& initHand1,
+        const std::array<float, 3>& initHand2,
+        const std::array<float, 3>& currHand1,
+        const std::array<float, 3>& currHand2,
+        TwoHandTransform& outTransform
+    );
+
     static float euclideanDistance(const Joint3D& a, const Joint3D& b);
     static std::array<float, 3> computeCrossProduct(const std::array<float, 3>& a, const std::array<float, 3>& b);
     static float computeDotProduct(const std::array<float, 3>& a, const std::array<float, 3>& b);
