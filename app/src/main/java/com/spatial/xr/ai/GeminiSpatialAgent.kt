@@ -5,7 +5,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class GeminiSpatialAgent(
-    private val windowManager: SpatialWindowManager? = null
+    private val windowManager: SpatialWindowManager? = null,
+    private var tutorialManager: com.spatial.xr.tutorial.TutorialManager? = null
 ) {
 
     enum class WakeTrigger {
@@ -29,12 +30,17 @@ class GeminiSpatialAgent(
         fun onRepositionWindow(windowId: Int, action: String): Boolean
         fun onOrganizeWorkspace(layoutStyle: String): Boolean
         fun onAnalyzeScene(query: String): String
+        fun onShowTutorial(topic: String): Boolean
     }
 
     private var customExecutor: SpatialToolExecutor? = null
 
     fun setCustomExecutor(executor: SpatialToolExecutor?) {
         this.customExecutor = executor
+    }
+
+    fun setTutorialManager(manager: com.spatial.xr.tutorial.TutorialManager?) {
+        this.tutorialManager = manager
     }
 
     /**
@@ -80,9 +86,21 @@ class GeminiSpatialAgent(
             })
         }
 
+        val showTutorial = JSONObject().apply {
+            put("name", "show_usage_tutorial")
+            put("description", "Display the animated graphical usage guide and tutorial explaining spatial gestures (pointing, pinch click, resizing, palm dock, air-swipe, voice).")
+            put("parameters", JSONObject().apply {
+                put("type", "OBJECT")
+                put("properties", JSONObject().apply {
+                    put("topic", JSONObject().put("type", "STRING").put("description", "Optional topic: 'pointer', 'resize', 'dock', 'swipe', 'gemini', or 'all'"))
+                })
+            })
+        }
+
         tools.put(launchApp)
         tools.put(organizeWorkspace)
         tools.put(analyzeScene)
+        tools.put(showTutorial)
         return tools
     }
 
@@ -110,11 +128,15 @@ class GeminiSpatialAgent(
                     executor.onAnalyzeScene(call.args.optString("query", "What am I looking at?"))
                     true
                 }
+                "show_usage_tutorial" -> {
+                    val topic = call.args.optString("topic", "all")
+                    executor.onShowTutorial(topic)
+                }
                 else -> false
             }
         }
 
-        // Default integration with windowManager
+        // Default integration with windowManager and tutorialManager
         return when (call.name) {
             "launch_app" -> {
                 val pkg = call.args.optString("package_name", "com.android.chrome")
@@ -131,8 +153,41 @@ class GeminiSpatialAgent(
                 }
                 true
             }
+            "show_usage_tutorial" -> {
+                val topic = call.args.optString("topic", "all")
+                tutorialManager?.startTutorialForQuery(topic)
+                true
+            }
             else -> false
         }
+    }
+
+    /**
+     * Inspect voice query for help/tutorial intent.
+     */
+    fun processVoiceIntent(query: String): AgentResponse {
+        val q = query.trim().lowercase()
+        val isHelp = q.contains("help") || q.contains("tutorial") || q.contains("how to") ||
+                q.contains("how do i") || q.contains("how can i") || q.contains("instructions") || q.contains("guide")
+
+        if (isHelp) {
+            val topic = when {
+                q.contains("pointer") || q.contains("pinch") || q.contains("click") -> "pointer"
+                q.contains("resize") || q.contains("window") -> "resize"
+                q.contains("palm") || q.contains("dock") || q.contains("apps") -> "dock"
+                q.contains("swipe") || q.contains("cinema") -> "swipe"
+                q.contains("voice") || q.contains("dictat") -> "gemini"
+                else -> "all"
+            }
+            val call = ToolCall("show_usage_tutorial", JSONObject().put("topic", topic))
+            executeSpatialTool(call)
+            return AgentResponse(
+                textResponse = "Opening the Spatial XR usage tutorial for you.",
+                executedToolCalls = listOf(call)
+            )
+        }
+
+        return AgentResponse(textResponse = "")
     }
 
     fun isWakeTriggerValid(trigger: WakeTrigger, audioKeyword: String? = null): Boolean {

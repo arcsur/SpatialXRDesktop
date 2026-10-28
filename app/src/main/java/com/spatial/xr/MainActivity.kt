@@ -16,6 +16,11 @@ import androidx.core.content.ContextCompat
 import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.display.ExternalDisplayManager
 import com.spatial.xr.display.PresentationManager
+import com.spatial.xr.tutorial.TutorialManager
+import com.spatial.xr.tutorial.TutorialOverlayDialog
+import com.spatial.xr.ai.GeminiSpatialAgent
+import android.widget.Button
+import android.widget.LinearLayout
 
 class MainActivity : AppCompatActivity(),
     ExternalDisplayManager.ExternalDisplayListener,
@@ -33,17 +38,50 @@ class MainActivity : AppCompatActivity(),
     private lateinit var usbManager: UsbManager
     private lateinit var externalDisplayManager: ExternalDisplayManager
     private lateinit var presentationManager: PresentationManager
+    private lateinit var tutorialManager: TutorialManager
+    private lateinit var geminiAgent: GeminiSpatialAgent
     private var statusTextView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val rootLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 64, 32, 64)
+        }
+
         statusTextView = TextView(this).apply {
             text = "Spatial XR Desktop Initializing...\nConnect VITURE Glasses via USB-C DP Alt Mode."
             textSize = 16f
-            setPadding(32, 64, 32, 64)
         }
-        setContentView(statusTextView)
+        rootLayout.addView(statusTextView)
+
+        val tutorialButton = Button(this).apply {
+            text = "📖 Open Usage Guide & Tutorial"
+            setOnClickListener {
+                showTutorialDialog()
+            }
+        }
+        rootLayout.addView(tutorialButton)
+
+        setContentView(rootLayout)
+
+        tutorialManager = TutorialManager(this)
+        geminiAgent = GeminiSpatialAgent(tutorialManager = tutorialManager)
+
+        geminiAgent.setCustomExecutor(object : GeminiSpatialAgent.SpatialToolExecutor {
+            override fun onLaunchApp(packageName: String, anchorMode: String): Boolean = true
+            override fun onRepositionWindow(windowId: Int, action: String): Boolean = true
+            override fun onOrganizeWorkspace(layoutStyle: String): Boolean = true
+            override fun onAnalyzeScene(query: String): String = "Spatial Scene Analyzer Active"
+            override fun onShowTutorial(topic: String): Boolean {
+                runOnUiThread {
+                    tutorialManager.startTutorialForQuery(topic)
+                    showTutorialDialog()
+                }
+                return true
+            }
+        })
 
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
@@ -52,6 +90,15 @@ class MainActivity : AppCompatActivity(),
         externalDisplayManager = ExternalDisplayManager(this, displayManager, usbManager, this)
 
         checkPermissions()
+
+        // First launch usage guide: check if tutorial completed
+        if (!tutorialManager.isTutorialCompleted()) {
+            showTutorialDialog()
+        }
+    }
+
+    private fun showTutorialDialog() {
+        TutorialOverlayDialog(this, tutorialManager).show()
     }
 
     private fun checkPermissions() {

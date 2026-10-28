@@ -10,3 +10,5 @@
 *.apk
 *.aab
 .codegraph
+.kotlin
+
