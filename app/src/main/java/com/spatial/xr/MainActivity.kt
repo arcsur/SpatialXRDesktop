@@ -31,6 +31,7 @@ import com.spatial.xr.ai.GeminiSpatialAgent
 import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.display.ExternalDisplayManager
 import com.spatial.xr.display.PresentationManager
+import com.spatial.xr.hardware.VitureCameraStreamer
 import com.spatial.xr.tutorial.TutorialManager
 import com.spatial.xr.tutorial.TutorialOverlayDialog
 import com.spatial.xr.window.AppLauncherRepository
@@ -57,6 +58,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var geminiAgent: GeminiSpatialAgent
     private lateinit var spatialWindowManager: SpatialWindowManager
     private lateinit var appLauncherRepository: AppLauncherRepository
+    private lateinit var vitureCameraStreamer: VitureCameraStreamer
 
     private var statusTextView: TextView? = null
     private var dockButton: Button? = null
@@ -93,6 +95,18 @@ class MainActivity : AppCompatActivity(),
 
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+
+        vitureCameraStreamer = VitureCameraStreamer(this, usbManager).apply {
+            setOnFrameProcessedListener { tracked ->
+                if (tracked) {
+                    runOnUiThread {
+                        if (statusTextView?.text?.contains("🖐️") != true) {
+                            statusTextView?.append("\n🖐️ Optical Hand Tracking: ACTIVE")
+                        }
+                    }
+                }
+            }
+        }
 
         presentationManager = PresentationManager(
             this,
@@ -380,7 +394,7 @@ class MainActivity : AppCompatActivity(),
 
     private fun onPermissionsGranted() {
         externalDisplayManager.startListening()
-        startFrontCameraPalmDetection()
+        vitureCameraStreamer.startStreaming()
     }
 
     override fun onResume() {
@@ -395,6 +409,7 @@ class MainActivity : AppCompatActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+        vitureCameraStreamer.stopStreaming()
         presentationManager.detachDisplay()
         externalDisplayManager.stopListening()
         NativeBridge.nativeShutdownCompositor()
@@ -433,79 +448,5 @@ class MainActivity : AppCompatActivity(),
     }
 
     override fun onDismissed() {
-    }
-
-    /**
-     * Starts front camera frame capture to detect look-at-palm gesture.
-     */
-    private fun startFrontCameraPalmDetection() {
-        try {
-            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val frontCameraId = cameraManager.cameraIdList.firstOrNull { id ->
-                val chars = cameraManager.getCameraCharacteristics(id)
-                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-            } ?: return
-
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                return
-            }
-
-            cameraManager.openCamera(frontCameraId, object : CameraDevice.StateCallback() {
-                override fun onOpened(camera: CameraDevice) {
-                    val imageReader = ImageReader.newInstance(320, 240, android.graphics.ImageFormat.YUV_420_888, 2)
-                    imageReader.setOnImageAvailableListener({ reader ->
-                        val image = reader.acquireLatestImage()
-                        if (image != null) {
-                            try {
-                                // Analyze average center brightness/motion for palm raise
-                                val yPlane = image.planes[0].buffer
-                                val capacity = yPlane.remaining()
-                                if (capacity > 1000) {
-                                    var sum = 0L
-                                    val step = capacity / 100
-                                    for (i in 0 until capacity step step) {
-                                        sum += (yPlane.get(i).toInt() and 0xFF)
-                                    }
-                                    val avgLum = sum / 100
-                                    // High center luminance close to camera = palm raised
-                                    if (avgLum > 180 && !spatialWindowManager.isWristDockVisible()) {
-                                        runOnUiThread {
-                                            spatialWindowManager.setWristDockVisible(true)
-                                            presentationManager.getRenderer()?.isDockExpanded = true
-                                            dockButton?.text = "🖐️ Close Dock"
-                                        }
-                                    }
-                                }
-                            } finally {
-                                image.close()
-                            }
-                        }
-                    }, Handler(Looper.getMainLooper()))
-
-                    val surface = imageReader.surface
-                    camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
-                        override fun onConfigured(session: CameraCaptureSession) {
-                            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                                addTarget(surface)
-                            }
-                            session.setRepeatingRequest(request.build(), null, null)
-                        }
-
-                        override fun onConfigureFailed(session: CameraCaptureSession) {
-                        }
-                    }, null)
-                }
-
-                override fun onDisconnected(camera: CameraDevice) {
-                    camera.close()
-                }
-
-                override fun onError(camera: CameraDevice, error: Int) {
-                    camera.close()
-                }
-            }, null)
-        } catch (e: Exception) {
-            // Camera tracking fallback handled by on-screen touchpad
-        }
     }
 }

@@ -29,4 +29,16 @@ class Phase3GestureTest {
         val len = Math.sqrt((ray.dirX * ray.dirX + ray.dirY * ray.dirY + ray.dirZ * ray.dirZ).toDouble()).toFloat()
         assertEquals(1.0f, len, 1e-4f)
     }
+
+    @Test
+    fun testVitureCameraHardwareConstants() {
+        assertEquals(3141, com.spatial.xr.hardware.VitureCameraStreamer.SONIX_VENDOR_ID)
+        assertEquals(25451, com.spatial.xr.hardware.VitureCameraStreamer.SONIX_PRODUCT_ID)
+        assertEquals(13770, com.spatial.xr.hardware.VitureCameraStreamer.VITURE_VENDOR_ID)
+    }
+
+    @Test
+    fun testNativeBridgeGracefulFallbackWhenNotLoaded() {
+        assertFalse(com.spatial.xr.bridge.NativeBridge.isNativeLoaded())
+    }
 }

@@ -13,6 +13,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Build
 import android.view.SurfaceHolder
+import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.window.AppLauncherRepository
 import com.spatial.xr.window.SpatialWindowManager
 import kotlin.math.cos
@@ -45,6 +46,21 @@ class SpatialStereoRenderer(
 
     @Volatile
     var isPinching: Boolean = false
+
+    @Volatile
+    var isHandsTracked: Boolean = false
+
+    private val leftRay = FloatArray(6)
+    private val rightRay = FloatArray(6)
+    private val leftPinchPos = FloatArray(3)
+    private val rightPinchPos = FloatArray(3)
+
+    private var twoHandTransformActive = false
+    private var activeTwoHandWindowId: Int = 1
+    private var lastPalmLookToggleTime = 0L
+    private var wasPinchingLastFrame = false
+    private var singleHandRepositionActive = false
+    private var singleHandRepositionWindowId: Int = 1
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -92,6 +108,8 @@ class SpatialStereoRenderer(
         }
 
         while (isRunning) {
+            updateHandTracking()
+
             val canvas = try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     surfaceHolder.lockHardwareCanvas()
@@ -453,12 +471,146 @@ class SpatialStereoRenderer(
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.textSize = 15f
         textPaint.color = Color.parseColor("#9000E5FF")
-        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • 60 FPS", ox + 24f, oy + 32f, textPaint)
+        val handInfo = if (isHandsTracked) "🖐️ HANDS: ACTIVE" else "🖐️ OPTICAL TRACKING: ON"
+        val pinchInfo = if (isPinching) " • 🤏 PINCH" else ""
+        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo", ox + 24f, oy + 32f, textPaint)
 
         textPaint.textAlign = Paint.Align.RIGHT
         textPaint.color = Color.parseColor("#70FFFFFF")
         canvas.drawText("VITURE LUMA ULTRA 6DOF • DISPLAY #6", ox + w - 24f, oy + 32f, textPaint)
 
         textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    private fun updateHandTracking() {
+        if (!NativeBridge.isNativeLoaded()) return
+
+        val handMask = NativeBridge.nativeGetHandPointers(leftRay, rightRay)
+        val pinchMask = NativeBridge.nativeGetPinchState()
+        val pinchPosMask = NativeBridge.nativeGetPinchPositions(leftPinchPos, rightPinchPos)
+        isHandsTracked = (handMask != 0)
+
+        val now = System.currentTimeMillis()
+
+        // 1. Look-at-Palm Gesture (Open/Close Apps Dock)
+        if (now - lastPalmLookToggleTime > 1500) {
+            val leftPalm = (handMask and 1 != 0) && NativeBridge.nativeIsLookingAtPalm(true)
+            val rightPalm = (handMask and 2 != 0) && NativeBridge.nativeIsLookingAtPalm(false)
+            if (leftPalm || rightPalm) {
+                toggleDock()
+                lastPalmLookToggleTime = now
+            }
+        }
+
+        // 2. Iron Man Two-Hand Diagonal Corner Pinch (Simultaneous Resize, Reposition, Yaw Angle)
+        val bothPinching = (pinchMask and 3) == 3 && (pinchPosMask and 3) == 3
+        if (bothPinching) {
+            val h1 = SpatialWindowManager.Vector3(leftPinchPos[0], leftPinchPos[1], leftPinchPos[2])
+            val h2 = SpatialWindowManager.Vector3(rightPinchPos[0], rightPinchPos[1], rightPinchPos[2])
+            val targetWin = windowManager.getAllWindows().firstOrNull()
+            if (targetWin != null) {
+                activeTwoHandWindowId = targetWin.windowId
+                if (!twoHandTransformActive) {
+                    twoHandTransformActive = true
+                    windowManager.startTwoHandDiagonalTransform(activeTwoHandWindowId, h1, h2)
+                } else {
+                    windowManager.updateTwoHandDiagonalTransform(activeTwoHandWindowId, h1, h2)
+                }
+                setPointer(0.5f, 0.5f, active = true, pinching = true)
+            }
+        } else {
+            if (twoHandTransformActive) {
+                windowManager.endTwoHandDiagonalTransform(activeTwoHandWindowId)
+                twoHandTransformActive = false
+            }
+
+            // 3. Single-Hand Laser Pointer Ray & Interactions
+            val activeRay = if (handMask and 2 != 0) rightRay else if (handMask and 1 != 0) leftRay else null
+            val isCurrentHandPinching = if (handMask and 2 != 0) (pinchMask and 2 != 0) else (pinchMask and 1 != 0)
+
+            if (activeRay != null) {
+                val ox = activeRay[0]
+                val oy = activeRay[1]
+                val oz = activeRay[2]
+                val dx = activeRay[3]
+                val dy = activeRay[4]
+                val dz = activeRay[5]
+
+                // Intersection with focal plane at Z = -1.2m
+                val targetZ = -1.2f
+                val t = if (Math.abs(dz) > 1e-4f) (targetZ - oz) / dz else 1.0f
+                val hitX = ox + dx * t
+                val hitY = oy + dy * t
+
+                // Normalized screen coordinates
+                val normX = (hitX / 0.70f + 0.5f).coerceIn(0f, 1f)
+                val normY = (-hitY / 0.50f + 0.5f).coerceIn(0f, 1f)
+
+                setPointer(normX, normY, active = true, pinching = isCurrentHandPinching)
+
+                val pinchDown = isCurrentHandPinching && !wasPinchingLastFrame
+                val pinchUp = !isCurrentHandPinching && wasPinchingLastFrame
+
+                handlePointerInteractions(normX, normY, pinchDown, isCurrentHandPinching, pinchUp, hitX, hitY, targetZ)
+                wasPinchingLastFrame = isCurrentHandPinching
+            } else {
+                wasPinchingLastFrame = false
+            }
+        }
+    }
+
+    private fun handlePointerInteractions(
+        nx: Float, ny: Float,
+        pinchDown: Boolean, isPinching: Boolean, pinchUp: Boolean,
+        hitX: Float, hitY: Float, hitZ: Float
+    ) {
+        // 1. App Dock Selection
+        if (isDockExpanded) {
+            val dockItems = launcherRepository.computeCurvedDockLayout()
+            if (ny > 0.65f && pinchDown && dockItems.isNotEmpty()) {
+                val maxIcons = dockItems.size.coerceAtMost(7)
+                val iconIdx = ((nx - 0.20f) / 0.60f * maxIcons).toInt().coerceIn(0, maxIcons - 1)
+                val selected = dockItems.getOrNull(iconIdx)
+                if (selected != null) {
+                    val nextId = windowManager.getAllWindows().size + 1
+                    val offsetX = if (nextId % 2 == 0) 0.35f else -0.35f
+                    windowManager.createWindow(
+                        windowId = nextId,
+                        packageName = selected.appItem.packageName,
+                        displaySessionId = 100 + nextId,
+                        widthMeters = 0.90f,
+                        heightMeters = 0.55f
+                    ).apply {
+                        position = SpatialWindowManager.Vector3(offsetX, 0.1f, -1.25f)
+                    }
+                }
+            }
+        } else {
+            // Wrist dock anchor tap
+            if (ny > 0.72f && pinchDown) {
+                toggleDock()
+            }
+        }
+
+        // 2. Window Top Grab Bar Repositioning (Perspective Scaled)
+        val win = windowManager.getAllWindows().firstOrNull() ?: return
+        val winDx = hitX - win.position.x
+        val winDy = hitY - win.position.y
+
+        val isOverTopBar = Math.abs(winDx) < (win.widthMeters * 0.55f) &&
+                Math.abs(winDy - (win.heightMeters * 0.45f)) < 0.18f
+
+        if (pinchDown && isOverTopBar) {
+            singleHandRepositionActive = true
+            singleHandRepositionWindowId = win.windowId
+            val handPos = SpatialWindowManager.Vector3(hitX, hitY, hitZ)
+            windowManager.startTopBarReposition(win.windowId, handPos)
+        } else if (isPinching && singleHandRepositionActive) {
+            val currentHandPos = SpatialWindowManager.Vector3(hitX, hitY, hitZ)
+            windowManager.updateTopBarReposition(singleHandRepositionWindowId, currentHandPos)
+        } else if (pinchUp && singleHandRepositionActive) {
+            windowManager.endTopBarReposition(singleHandRepositionWindowId)
+            singleHandRepositionActive = false
+        }
     }
 }

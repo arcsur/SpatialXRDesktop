@@ -132,6 +132,38 @@ void testTwoHandScaleAndLookAtPalm() {
     assert(tf.translationDelta[2] < -0.3f); // Moved deeper in Z
     assert(tf.yawDeltaRadians > 0.3f); // Right hand pushed deeper -> positive yaw angle
 
+    // Test camera frame ingestion
+    HandTrackingQnn frameTracker;
+    frameTracker.initialize();
+
+    const int width = 320;
+    const int height = 240;
+    std::vector<uint8_t> yPlane(width * height, 10); // dark background
+    std::vector<uint8_t> uvPlane(width * height / 2, 128); // neutral chroma
+
+    // Draw hand blob on right half (X: 180..260, Y: 100..180)
+    for (int y = 100; y < 180; ++y) {
+        for (int x = 180; x < 260; ++x) {
+            yPlane[y * width + x] = 160; // hand luminance
+            int uvIdx = (y / 2) * width + (x / 2) * 2;
+            uvPlane[uvIdx] = 100;     // U in [75, 135]
+            uvPlane[uvIdx + 1] = 150; // V in [130, 180]
+        }
+    }
+
+    bool processed = frameTracker.processCameraFrame(width, height, yPlane.data(), uvPlane.data());
+    assert(processed);
+    const auto& rightHand = frameTracker.getHand(false);
+    assert(rightHand.isTracked);
+    assert(rightHand.joints[INDEX_FINGER_TIP].z < 0.0f); // In front of user (-0.5m)
+
+    auto pointerRay = HandTrackingQnn::computeIndexPointerRay(rightHand);
+    assert(pointerRay.direction[1] != 0.0f || pointerRay.direction[0] != 0.0f);
+
+    // Empty frame drops tracking
+    std::vector<uint8_t> emptyY(width * height, 0);
+    frameTracker.processCameraFrame(width, height, emptyY.data(), nullptr);
+    assert(!frameTracker.getHand(false).isTracked);
 }
 
 #ifndef SPATIAL_COMBINED_TEST_RUNNER

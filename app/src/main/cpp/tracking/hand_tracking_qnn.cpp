@@ -22,6 +22,110 @@ void HandTrackingQnn::updateHandJoints(bool isLeft, const std::array<Joint3D, JO
     hand.trackingConfidence = confidence;
 }
 
+bool HandTrackingQnn::processCameraFrame(int width, int height, const uint8_t* yPlane, const uint8_t* uvPlane) {
+    if (!yPlane || width <= 0 || height <= 0) return false;
+
+    // Scan lower 75% of frame where hands naturally appear in AR glasses FOV
+    int startY = height / 4;
+    int minHandPixels = (width * height) / 120; // At least ~0.8% of pixels
+
+    auto detectHandOnSide = [&](bool isLeft) {
+        int startX = isLeft ? 0 : width / 2;
+        int endX = isLeft ? width / 2 : width;
+
+        int count = 0;
+        int64_t sumX = 0, sumY = 0;
+        int minY = height, maxY = 0;
+        int minX = endX, maxX = startX;
+        int tipX = startX, tipY = height;
+
+        // Subsample step for speed
+        const int step = 4;
+        for (int y = startY; y < height; y += step) {
+            for (int x = startX; x < endX; x += step) {
+                uint8_t yVal = yPlane[y * width + x];
+                bool isSkin = false;
+
+                if (uvPlane) {
+                    // YUV420 semi-planar UV check
+                    int uvIndex = (y / 2) * width + (x / 2) * 2;
+                    uint8_t u = uvPlane[uvIndex];
+                    uint8_t v = uvPlane[uvIndex + 1];
+                    isSkin = (yVal > 40 && u >= 75 && u <= 135 && v >= 130 && v <= 180);
+                } else {
+                    // Grayscale intensity thresholding for foreground hands
+                    isSkin = (yVal > 60 && yVal < 240);
+                }
+
+                if (isSkin) {
+                    count++;
+                    sumX += x;
+                    sumY += y;
+                    if (y < minY) {
+                        minY = y;
+                        tipX = x;
+                        tipY = y;
+                    }
+                    if (y > maxY) maxY = y;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                }
+            }
+        }
+
+        HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+        if (count >= (minHandPixels / (step * step))) {
+            float cx = static_cast<float>(sumX) / count;
+            float cy = static_cast<float>(sumY) / count;
+
+            // Map camera pixels to metric 3D space in front of glasses
+            auto to3D = [&](float px, float py) -> Joint3D {
+                float normX = (px - width * 0.5f) / (width * 0.5f);
+                float normY = (height * 0.5f - py) / (height * 0.5f);
+                return {
+                    normX * 0.28f, // +/- 28cm field
+                    normY * 0.22f, // +/- 22cm field
+                    -0.50f,        // 50cm in front of eyes
+                    1.0f
+                };
+            };
+
+            std::array<Joint3D, JOINT_COUNT> joints{};
+            // Base of palm / wrist
+            joints[WRIST] = to3D(cx, static_cast<float>(maxY));
+            // Index finger MCP and TIP
+            joints[INDEX_FINGER_MCP] = to3D(cx, cy - 25.0f);
+            joints[INDEX_FINGER_TIP] = to3D(static_cast<float>(tipX), static_cast<float>(tipY));
+
+            // Thumb MCP and TIP (thumb extends outward laterally)
+            float thumbX = isLeft ? static_cast<float>(maxX) : static_cast<float>(minX);
+            joints[THUMB_MCP] = to3D(cx + (isLeft ? 20.0f : -20.0f), cy);
+            joints[THUMB_TIP] = to3D(thumbX, cy - 10.0f);
+
+            // Pinky MCP (opposite side of palm from thumb)
+            float pinkyX = isLeft ? static_cast<float>(minX) : static_cast<float>(maxX);
+            joints[PINKY_MCP] = to3D(pinkyX, cy);
+            joints[PINKY_TIP] = to3D(pinkyX, cy - 20.0f);
+
+            // Middle and ring fingers for completeness
+            joints[MIDDLE_FINGER_MCP] = to3D(cx, cy - 20.0f);
+            joints[MIDDLE_FINGER_TIP] = to3D(cx, static_cast<float>(minY) - 5.0f);
+            joints[RING_FINGER_MCP] = to3D(cx + (isLeft ? -10.0f : 10.0f), cy - 20.0f);
+            joints[RING_FINGER_TIP] = to3D(cx + (isLeft ? -10.0f : 10.0f), static_cast<float>(minY));
+
+            updateHandJoints(isLeft, joints, 0.95f);
+            updatePinchGesture(isLeft);
+        } else {
+            hand.isTracked = false;
+        }
+    };
+
+    detectHandOnSide(true);  // Left Hand
+    detectHandOnSide(false); // Right Hand
+
+    return true;
+}
+
 float HandTrackingQnn::euclideanDistance(const Joint3D& a, const Joint3D& b) {
     float dx = a.x - b.x;
     float dy = a.y - b.y;

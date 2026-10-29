@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- VITURE Luma Ultra Optical Tracking Stereo Cameras (Sonix Technology Co., Ltd.) -->
+    <usb-device vendor-id="3141" product-id="25451" />
+    <usb-device vendor-id="3141" />
+    <!-- VITURE Glasses MCU / IMU / Audio -->
+    <usb-device vendor-id="13770" product-id="4356" />
+    <usb-device vendor-id="13770" product-id="4354" />
+    <usb-device vendor-id="13770" />
+    <!-- Standard USB Video Class (UVC) -->
+    <usb-device class="239" subclass="2" protocol="1" />
+    <usb-device class="14" subclass="1" />
+    <usb-device class="14" subclass="2" />
+</resources>

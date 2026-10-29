@@ -72,6 +72,9 @@ public:
 
     void updateHandJoints(bool isLeft, const std::array<Joint3D, JOINT_COUNT>& joints, float confidence = 0.95f);
 
+    // Frame ingestion: Process stereo or monocular camera frames for optical hand tracking
+    bool processCameraFrame(int width, int height, const uint8_t* yPlane, const uint8_t* uvPlane = nullptr);
+
     const HandSkeleton& getHand(bool isLeft) const {
         return isLeft ? leftHand_ : rightHand_;
     }

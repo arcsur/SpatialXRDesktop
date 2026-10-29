@@ -31,9 +31,16 @@ object NativeBridge {
     external fun nativePredictPose(predictedTimestampNs: Long, outPoseArray: FloatArray): Boolean
 
     // Phase 3: Hand Tracking & Gestures
-    external fun nativeProcessCameraFrame(width: Int, height: Int, yPlane: ByteArray, uvPlane: ByteArray): Boolean
+    external fun nativeProcessCameraFrame(width: Int, height: Int, yPlane: ByteArray, uvPlane: ByteArray?): Boolean
     external fun nativeGetHandPointers(outLeftRay: FloatArray, outRightRay: FloatArray): Int
     external fun nativeGetPinchState(): Int // Bit 0: Left, Bit 1: Right
+    external fun nativeGetPinchPositions(outLeftPos: FloatArray, outRightPos: FloatArray): Int
+    external fun nativeIsLookingAtPalm(isLeft: Boolean): Boolean
+    external fun nativeGetTwoHandTransform(
+        initLeftPos: FloatArray,
+        initRightPos: FloatArray,
+        outTransform: FloatArray
+    ): Boolean
 
     // Phase 8: Asynchronous TimeWarp
     external fun nativeStartAtwThread(): Boolean
