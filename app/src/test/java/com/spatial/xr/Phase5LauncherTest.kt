@@ -93,4 +93,43 @@ class Phase5LauncherTest {
         wm.setWristDockVisible(true)
         assertTrue(wm.isWristDockVisible())
     }
+
+    @Test
+    fun testAppDrawerAutoCloseTimeout() {
+        val wm = SpatialWindowManager()
+        wm.wristDockAutoCloseTimeoutMs = 12000L // 12 seconds auto-close
+
+        // Open app drawer at t = 1000ms
+        wm.setWristDockVisible(true, currentTime = 1000L)
+        assertTrue(wm.isWristDockVisible())
+
+        // At t = 8000ms (7s elapsed < 12s) -> Still open
+        val closedEarly = wm.checkWristDockTimeout(currentTime = 8000L)
+        assertFalse(closedEarly)
+        assertTrue(wm.isWristDockVisible())
+
+        // At t = 13500ms (12.5s elapsed >= 12s) -> Auto-closes!
+        val closedOnTimeout = wm.checkWristDockTimeout(currentTime = 13500L)
+        assertTrue(closedOnTimeout)
+        assertFalse("App drawer must automatically close after 10-15s timeout", wm.isWristDockVisible())
+    }
+
+    @Test
+    fun testAppDrawerTimeoutResetOnInteraction() {
+        val wm = SpatialWindowManager()
+        wm.wristDockAutoCloseTimeoutMs = 12000L
+
+        wm.setWristDockVisible(true)
+
+        // At t = 10000ms, user interacts near dock, resetting timer
+        wm.resetWristDockTimeout(currentTime = 10000L)
+
+        // At t = 15000ms (only 5s since reset) -> Stays open
+        assertFalse(wm.checkWristDockTimeout(currentTime = 15000L))
+        assertTrue(wm.isWristDockVisible())
+
+        // At t = 22500ms (12.5s since reset) -> Auto-closes
+        assertTrue(wm.checkWristDockTimeout(currentTime = 22500L))
+        assertFalse(wm.isWristDockVisible())
+    }
 }

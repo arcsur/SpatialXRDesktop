@@ -16,10 +16,48 @@ bool HandTrackingQnn::initialize(const std::string& /*palmModelPath*/, const std
 
 void HandTrackingQnn::updateHandJoints(bool isLeft, const std::array<Joint3D, JOINT_COUNT>& joints, float confidence) {
     HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+    bool wasTracked = hand.isTracked;
     hand.isTracked = (confidence > 0.3f);
     hand.isLeft = isLeft;
-    hand.joints = joints;
     hand.trackingConfidence = confidence;
+
+    if (!hand.isTracked) return;
+
+    if (!wasTracked) {
+        hand.joints = joints;
+        return;
+    }
+
+    // Adaptive low-pass filter to eliminate micro-jitter while keeping fast motions responsive
+    for (size_t i = 0; i < JOINT_COUNT; ++i) {
+        float dx = joints[i].x - hand.joints[i].x;
+        float dy = joints[i].y - hand.joints[i].y;
+        float dz = joints[i].z - hand.joints[i].z;
+        float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        // Discontinuity snap guard: jump > 20cm snaps immediately to prevent cross-space interpolation
+        if (dist > 0.20f) {
+            hand.joints[i] = joints[i];
+            continue;
+        }
+
+        float alpha;
+        if (dist < 0.003f) {
+            // Under 3mm: stationary jitter suppression
+            alpha = 0.28f;
+        } else if (dist < 0.030f) {
+            // 3mm - 30mm: steady interactive manipulation (reduced trailing)
+            alpha = 0.65f;
+        } else {
+            // Over 30mm: fast arm/hand sweeps
+            alpha = 0.92f;
+        }
+
+        hand.joints[i].x += dx * alpha;
+        hand.joints[i].y += dy * alpha;
+        hand.joints[i].z += dz * alpha;
+        hand.joints[i].confidence = joints[i].confidence;
+    }
 }
 
 void HandTrackingQnn::resetHand(bool isLeft) {

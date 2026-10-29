@@ -82,6 +82,10 @@ class VirtualDisplayHost(
         val clampedWidth = newWidth.coerceIn(320, 3840)
         val clampedHeight = newHeight.coerceIn(240, 2160)
 
+        if (session.width == clampedWidth && session.height == clampedHeight && session.densityDpi == newDpi) {
+            return true
+        }
+
         session.width = clampedWidth
         session.height = clampedHeight
         session.densityDpi = newDpi

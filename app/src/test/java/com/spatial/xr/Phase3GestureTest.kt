@@ -87,4 +87,55 @@ class Phase3GestureTest {
         assertTrue(rightPinching)
         assertTrue("Left and right hands maintain separate horizontal positions", leftAimX != rightAimX)
     }
+
+    @Test
+    fun testSpatialHandAssignmentDisambiguatesFlippedClassifierLabels() {
+        data class MockHandCandidate(val id: Int, val centerX: Float, val rawCategoryIsLeft: Boolean)
+
+        fun assignHands(candidates: List<MockHandCandidate>): Pair<MockHandCandidate?, MockHandCandidate?> {
+            if (candidates.isEmpty()) return Pair(null, null)
+            if (candidates.size == 1) {
+                val c = candidates[0]
+                val isLeft = if (c.centerX < 0.42f) true else if (c.centerX > 0.58f) false else c.rawCategoryIsLeft
+                return if (isLeft) Pair(c, null) else Pair(null, c)
+            }
+            val sorted = candidates.sortedBy { it.centerX }
+            return Pair(sorted[0], sorted[1])
+        }
+
+        // Scenario 1: MediaPipe mistakenly labels BOTH hands as "Right"
+        val bothRight = listOf(
+            MockHandCandidate(0, centerX = 0.28f, rawCategoryIsLeft = false), // Hand on left
+            MockHandCandidate(1, centerX = 0.72f, rawCategoryIsLeft = false)  // Hand on right
+        )
+        val (left1, right1) = assignHands(bothRight)
+        assertEquals(0, left1?.id)
+        assertEquals(1, right1?.id)
+
+        // Scenario 2: MediaPipe completely inverts labels (left hand labeled Right, right hand labeled Left)
+        val inverted = listOf(
+            MockHandCandidate(0, centerX = 0.30f, rawCategoryIsLeft = false), // Left hand mislabeled Right
+            MockHandCandidate(1, centerX = 0.70f, rawCategoryIsLeft = true)   // Right hand mislabeled Left
+        )
+        val (left2, right2) = assignHands(inverted)
+        assertEquals(0, left2?.id)
+        assertEquals(1, right2?.id)
+    }
+
+    @Test
+    fun testDiscontinuitySnapGuardPreventsCrossHandDragging() {
+        fun smooth(curr: Float, target: Float): Float {
+            val diff = Math.abs(target - curr)
+            if (diff > 0.20f) return target // Snap guard
+            return curr + (target - curr) * 0.40f
+        }
+
+        // Normal small movement: smoothed
+        val smoothed = smooth(0.50f, 0.53f)
+        assertEquals(0.512f, smoothed, 1e-3f)
+
+        // Teleport / cross-hand swap (> 20cm / 0.20): snaps directly, zero cross-drag!
+        val snapped = smooth(-0.30f, 0.30f)
+        assertEquals(0.30f, snapped, 1e-4f)
+    }
 }

@@ -119,9 +119,30 @@ class SpatialWindowManager(
     private var focusedWindowId: Int? = null
     private val mruStack = mutableListOf<Int>()
     private var isWristDockVisible = false
+    private var wristDockOpenTimestamp = 0L
+    var wristDockAutoCloseTimeoutMs = 12000L
 
     fun isWristDockVisible(): Boolean = isWristDockVisible
-    fun setWristDockVisible(visible: Boolean) { isWristDockVisible = visible }
+    fun setWristDockVisible(visible: Boolean, currentTime: Long = System.currentTimeMillis()) {
+        isWristDockVisible = visible
+        if (visible) {
+            wristDockOpenTimestamp = currentTime
+        }
+    }
+
+    fun checkWristDockTimeout(currentTime: Long = System.currentTimeMillis()): Boolean {
+        if (isWristDockVisible && (currentTime - wristDockOpenTimestamp >= wristDockAutoCloseTimeoutMs)) {
+            isWristDockVisible = false
+            return true
+        }
+        return false
+    }
+
+    fun resetWristDockTimeout(currentTime: Long = System.currentTimeMillis()) {
+        if (isWristDockVisible) {
+            wristDockOpenTimestamp = currentTime
+        }
+    }
 
     fun createWindow(
         windowId: Int,
@@ -150,6 +171,26 @@ class SpatialWindowManager(
     fun getAllWindows(): Collection<SpatialWindow> = windows.values
     fun getFocusedWindow(): SpatialWindow? = focusedWindowId?.let { windows[it] }
     fun getMruStack(): List<Int> = mruStack.toList()
+
+    fun findClosestWindow(x: Float, y: Float, z: Float): SpatialWindow? {
+        val allWindows = windows.values
+        if (allWindows.isEmpty()) return null
+
+        var closestWin: SpatialWindow? = null
+        var minDistanceSq = Float.MAX_VALUE
+
+        for (win in allWindows) {
+            val dx = x - win.position.x
+            val dy = y - win.position.y
+            val dz = z - win.position.z
+            val distSq = dx * dx + dy * dy + dz * dz
+            if (distSq < minDistanceSq) {
+                minDistanceSq = distSq
+                closestWin = win
+            }
+        }
+        return closestWin
+    }
 
     fun setFocusedWindow(windowId: Int) {
         if (windows.containsKey(windowId)) {
@@ -331,7 +372,9 @@ class SpatialWindowManager(
         val initialYawAngle: Float = 0f,
         val initialWindowPos: Vector3 = Vector3(0f, 0f, -1.2f),
         val initialOrientation: Quaternion = Quaternion.IDENTITY,
-        val has3DTransform: Boolean = false
+        val has3DTransform: Boolean = false,
+        var lastAppliedDeltaYaw: Float = 0f,
+        var lastAppliedScale: Float = 1.0f
     )
 
     data class RepositionSession(
@@ -389,7 +432,9 @@ class SpatialWindowManager(
             initialYawAngle = initialYawAngle,
             initialWindowPos = window.position,
             initialOrientation = window.orientation,
-            has3DTransform = true
+            has3DTransform = true,
+            lastAppliedDeltaYaw = 0f,
+            lastAppliedScale = 1.0f
         )
         setFocusedWindow(windowId)
         return true
@@ -409,8 +454,14 @@ class SpatialWindowManager(
         val dz = hand2Pos.z - hand1Pos.z
         val currentDistance = sqrt(dx * dx + dy * dy + dz * dz)
 
-        // 1. Resize (scale width & height proportionally)
-        val scale = (currentDistance / session.initialDistance).coerceIn(0.2f, 4.0f)
+        // 1. Resize (scale width & height proportionally) with deadband to ignore tremor
+        val rawScale = (currentDistance / session.initialDistance).coerceIn(0.2f, 4.0f)
+        val scaleDiff = kotlin.math.abs(rawScale - session.lastAppliedScale)
+        val scale = if (scaleDiff < 0.015f) {
+            session.lastAppliedScale
+        } else {
+            rawScale.also { session.lastAppliedScale = it }
+        }
         window.widthMeters = (session.initialWidth * scale).coerceIn(0.40f, 3.0f)
         window.heightMeters = (session.initialHeight * scale).coerceIn(0.25f, 2.0f)
 
@@ -431,25 +482,40 @@ class SpatialWindowManager(
             newZ
         )
 
-        // 3. Horizontal yaw angle adjustment (adjusts horizontal tilt so one side is further/closer)
+        // 3. Horizontal yaw angle adjustment with deadband (~1.5 deg) to eliminate depth chatter
         val leftHand = if (session.isHand1Left) hand1Pos else hand2Pos
         val rightHand = if (session.isHand1Left) hand2Pos else hand1Pos
         val currentYawAngle = kotlin.math.atan2(
             rightHand.z - leftHand.z,
             rightHand.x - leftHand.x
         )
-        val deltaYaw = session.initialYawAngle - currentYawAngle
+        val rawDeltaYaw = session.initialYawAngle - currentYawAngle
+        val yawDiff = rawDeltaYaw - session.lastAppliedDeltaYaw
+        val deltaYaw = if (kotlin.math.abs(yawDiff) < 0.026f) {
+            session.lastAppliedDeltaYaw
+        } else {
+            rawDeltaYaw.also { session.lastAppliedDeltaYaw = it }
+        }
         val rotQ = Quaternion.fromAxisAngle(Vector3(0f, 1f, 0f), deltaYaw)
         window.orientation = rotQ.multiply(session.initialOrientation)
 
         val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
         val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
-        virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+        val currentSession = virtualDisplayHost?.getSession(window.displaySessionId)
+        if (currentSession == null || Math.abs(currentSession.width - pixelW) >= 16 || Math.abs(currentSession.height - pixelH) >= 16) {
+            virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+        }
 
         return true
     }
 
     fun endTwoHandDiagonalTransform(windowId: Int) {
+        val window = windows[windowId]
+        if (window != null) {
+            val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
+            val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
+            virtualDisplayHost?.resizeDisplaySession(window.displaySessionId, pixelW, pixelH)
+        }
         twoHandResizeSessions.remove(windowId)
     }
 

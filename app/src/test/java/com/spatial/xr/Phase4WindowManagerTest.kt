@@ -212,4 +212,182 @@ class Phase4WindowManagerTest {
         assertTrue(centerHit.isHit)
         assertFalse(WindowInputInjector.isTopGrabBarHit(centerHit, 1.0f, 0.08f))
     }
+
+    @Test
+    fun testGenerousCloseEnoughTopGrabBarHitWithSlack() {
+        val quadW = 1.0f // halfW = 0.5f
+        val quadH = 0.6f // halfH = 0.3f
+
+        // Point strictly inside top bar (e.g. Y = 0.28m)
+        assertTrue(WindowInputInjector.isTopGrabBarHitWithSlack(0.1f, 0.28f, quadW, quadH))
+
+        // Point 15cm ABOVE top edge in empty air (Y = +0.45m > halfH 0.3m) -> Close enough!
+        assertTrue(WindowInputInjector.isTopGrabBarHitWithSlack(0.0f, 0.45f, quadW, quadH))
+
+        // Point 15cm past right side of top bar (X = +0.65m > halfW 0.5m) -> Close enough!
+        assertTrue(WindowInputInjector.isTopGrabBarHitWithSlack(0.65f, 0.32f, quadW, quadH))
+
+        // Point far above window (Y = +0.70m > halfH + slack) -> Outside
+        assertFalse(WindowInputInjector.isTopGrabBarHitWithSlack(0.0f, 0.70f, quadW, quadH))
+
+        // Point at center of window (Y = 0.0m) -> Not top bar
+        assertFalse(WindowInputInjector.isTopGrabBarHitWithSlack(0.0f, 0.0f, quadW, quadH))
+    }
+
+    @Test
+    fun testGenerousCloseEnoughCornerResizeHandles() {
+        val quadW = 1.0f // halfW = 0.5f
+        val quadH = 0.6f // halfH = 0.3f
+
+        // Bottom-Right corner is at (+0.5, -0.3)
+        // Pinching 14cm outside bottom-right corner at (+0.60, -0.38) -> Snaps to BOTTOM_RIGHT
+        val brCorner = WindowInputInjector.getNearestResizeCorner(0.60f, -0.38f, quadW, quadH, toleranceMeters = 0.24f)
+        assertEquals(ResizeCorner.BOTTOM_RIGHT, brCorner)
+
+        // Top-Left corner is at (-0.5, +0.3)
+        // Pinching 12cm outside top-left at (-0.58, +0.38) -> Snaps to TOP_LEFT
+        val tlCorner = WindowInputInjector.getNearestResizeCorner(-0.58f, 0.38f, quadW, quadH, toleranceMeters = 0.24f)
+        assertEquals(ResizeCorner.TOP_LEFT, tlCorner)
+
+        // Center of window -> Not near any corner
+        val centerCorner = WindowInputInjector.getNearestResizeCorner(0f, 0f, quadW, quadH, toleranceMeters = 0.24f)
+        org.junit.Assert.assertNull(centerCorner)
+    }
+
+    @Test
+    fun testGenerousCloseEnoughEdgeResizeHandles() {
+        val quadW = 1.0f // halfW = 0.5f
+        val quadH = 0.6f // halfH = 0.3f
+
+        // Right edge is at X = +0.5m, Y in [-0.3, +0.3]
+        // Pinching 8cm outside right edge at (+0.58, 0.05) -> Snaps to right edge resize
+        val rightEdgeCorner = WindowInputInjector.getNearestEdgeResizeCorner(0.58f, 0.05f, quadW, quadH, edgeSlackMeters = 0.20f)
+        assertEquals(ResizeCorner.TOP_RIGHT, rightEdgeCorner)
+
+        // Bottom edge is at Y = -0.3m
+        // Pinching 9cm below bottom edge at (0.1, -0.39) -> Snaps to bottom edge resize
+        val bottomEdgeCorner = WindowInputInjector.getNearestEdgeResizeCorner(0.10f, -0.39f, quadW, quadH, edgeSlackMeters = 0.20f)
+        assertEquals(ResizeCorner.BOTTOM_RIGHT, bottomEdgeCorner)
+
+        // Far away outside window -> Null
+        val farOutside = WindowInputInjector.getNearestEdgeResizeCorner(1.2f, 0.0f, quadW, quadH, edgeSlackMeters = 0.20f)
+        org.junit.Assert.assertNull(farOutside)
+    }
+
+    @Test
+    fun testMultipleWindowsSelectionNearPinchingFingers() {
+        val wm = SpatialWindowManager()
+        val win1 = wm.createWindow(1, "com.spatial.left", 101, widthMeters = 0.8f, heightMeters = 0.5f)
+        win1.position = Vector3(-0.55f, 0.05f, -1.2f)
+
+        val win2 = wm.createWindow(2, "com.spatial.right", 102, widthMeters = 0.8f, heightMeters = 0.5f)
+        win2.position = Vector3(0.55f, 0.05f, -1.2f)
+
+        // Pinching fingers near right window
+        val rightPinch = wm.findClosestWindow(0.50f, 0.0f, -1.2f)
+        assertNotNull(rightPinch)
+        assertEquals(2, rightPinch?.windowId)
+
+        // Pinching fingers near left window
+        val leftPinch = wm.findClosestWindow(-0.50f, 0.0f, -1.2f)
+        assertNotNull(leftPinch)
+        assertEquals(1, leftPinch?.windowId)
+    }
+
+    @Test
+    fun testTwoHandTransformTargetsWindowNearPinchingFingers() {
+        val wm = SpatialWindowManager()
+        val win1 = wm.createWindow(1, "com.spatial.left", 101, widthMeters = 0.8f, heightMeters = 0.5f)
+        win1.position = Vector3(-0.6f, 0.0f, -1.2f)
+
+        val win2 = wm.createWindow(2, "com.spatial.right", 102, widthMeters = 0.8f, heightMeters = 0.5f)
+        win2.position = Vector3(0.6f, 0.0f, -1.2f)
+
+        // Pinching with two hands around Window 2
+        val h1 = Vector3(0.3f, 0.2f, -1.2f)
+        val h2 = Vector3(0.9f, -0.2f, -1.2f)
+        val midX = (h1.x + h2.x) * 0.5f // 0.6f
+        val midY = (h1.y + h2.y) * 0.5f // 0.0f
+        val midZ = (h1.z + h2.z) * 0.5f // -1.2f
+
+        val targetWin = wm.findClosestWindow(midX, midY, midZ)
+        assertEquals(2, targetWin?.windowId)
+
+        wm.startTwoHandDiagonalTransform(targetWin!!.windowId, h1, h2)
+
+        // Stretch Window 2
+        val h1Far = Vector3(0.15f, 0.3f, -1.2f)
+        val h2Far = Vector3(1.05f, -0.3f, -1.2f)
+        wm.updateTwoHandDiagonalTransform(targetWin.windowId, h1Far, h2Far)
+
+        // Window 2 resized, Window 1 unchanged
+        assertTrue("Window 2 must be resized", win2.widthMeters > 0.9f)
+        assertEquals(0.8f, win1.widthMeters, 1e-4f)
+        assertEquals(0.5f, win1.heightMeters, 1e-4f)
+
+        wm.endTwoHandDiagonalTransform(targetWin.windowId)
+    }
+
+    @Test
+    fun testTwoHandYawDeadbandSuppressesDepthChatter() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.deadband", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        val h1 = Vector3(-0.5f, 0.3f, -1.2f)
+        val h2 = Vector3(0.5f, -0.3f, -1.2f)
+        wm.startTwoHandDiagonalTransform(1, h1, h2)
+        val initialOrientation = win.orientation
+
+        // Micro-tremor in depth: right hand fluctuates by 8mm (-1.208 vs -1.2)
+        // Angle diff: atan2(-0.008, 1.0) = -0.008 rad (~0.45 deg), well below 0.026 rad (1.5 deg) deadband
+        val h1Jitter = Vector3(-0.5f, 0.3f, -1.2f)
+        val h2Jitter = Vector3(0.5f, -0.3f, -1.208f)
+        wm.updateTwoHandDiagonalTransform(1, h1Jitter, h2Jitter)
+
+        // Orientation MUST remain strictly locked (no chatter)
+        assertEquals(initialOrientation.w, win.orientation.w, 1e-4f)
+        assertEquals(initialOrientation.y, win.orientation.y, 1e-4f)
+
+        // Deliberate angular tilt: right hand pushed 25cm deeper (-1.45 vs -1.2)
+        // Angle diff: atan2(-0.25, 1.0) = -0.245 rad (~14 deg), well above deadband
+        val h2Tilt = Vector3(0.5f, -0.3f, -1.45f)
+        wm.updateTwoHandDiagonalTransform(1, h1, h2Tilt)
+
+        // Orientation MUST update to reflect intentional turn
+        assertTrue(kotlin.math.abs(win.orientation.y - initialOrientation.y) > 0.05f)
+
+        wm.endTwoHandDiagonalTransform(1)
+    }
+
+    @Test
+    fun testTwoHandScaleDeadbandSuppressesTremor() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.scaledeadband", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        val h1 = Vector3(-0.5f, 0.3f, -1.2f)
+        val h2 = Vector3(0.5f, -0.3f, -1.2f)
+        wm.startTwoHandDiagonalTransform(1, h1, h2)
+
+        val initialW = win.widthMeters
+        val initialH = win.heightMeters
+
+        // Micro-tremor: ~0.4% distance change (< 1.5% deadband)
+        val h1Tremor = Vector3(-0.502f, 0.3f, -1.2f)
+        val h2Tremor = Vector3(0.502f, -0.3f, -1.2f)
+        wm.updateTwoHandDiagonalTransform(1, h1Tremor, h2Tremor)
+
+        assertEquals(initialW, win.widthMeters, 1e-4f)
+        assertEquals(initialH, win.heightMeters, 1e-4f)
+
+        // Intentional stretch: 30% distance change
+        val h1Stretch = Vector3(-0.65f, 0.39f, -1.2f)
+        val h2Stretch = Vector3(0.65f, -0.39f, -1.2f)
+        wm.updateTwoHandDiagonalTransform(1, h1Stretch, h2Stretch)
+
+        assertTrue(win.widthMeters > 1.2f)
+
+        wm.endTwoHandDiagonalTransform(1)
+    }
 }

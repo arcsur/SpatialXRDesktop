@@ -29,6 +29,19 @@ class MediaPipeHandTracker(private val context: Context) {
     private var cachedBitmap: Bitmap? = null
     private var pixelBuffer: IntArray? = null
 
+    private var leftSmoothedDepth = -0.50f
+    private var rightSmoothedDepth = -0.50f
+    private var leftSmoothedSpan = 0f
+    private var rightSmoothedSpan = 0f
+    private var leftSmoothedNormX = 0.5f
+    private var leftSmoothedNormY = 0.5f
+    private var rightSmoothedNormX = 0.5f
+    private var rightSmoothedNormY = 0.5f
+    private val leftSmoothedJoints = FloatArray(21 * 3)
+    private val rightSmoothedJoints = FloatArray(21 * 3)
+    private var wasLeftTracked = false
+    private var wasRightTracked = false
+
     init {
         initializeLandmarker()
     }
@@ -194,13 +207,17 @@ class MediaPipeHandTracker(private val context: Context) {
     private var detectionCount = 0
     private var totalResultFrames = 0
 
+    private data class HandCandidate(
+        val handIndex: Int,
+        val centerX: Float,
+        val rawCategoryIsLeft: Boolean,
+        val confidence: Float
+    )
+
     private fun onHandLandmarkerResult(result: HandLandmarkerResult, mpImage: MPImage) {
         val landmarksList = result.landmarks()
         val worldLandmarksList = result.worldLandmarks()
         val handednesses = result.handednesses()
-
-        var leftDetected = false
-        var rightDetected = false
 
         totalResultFrames++
         if (totalResultFrames % 60 == 1) {
@@ -214,55 +231,207 @@ class MediaPipeHandTracker(private val context: Context) {
             }
         }
 
-        for (handIndex in 0 until landmarksList.size) {
-            val landmarks = landmarksList[handIndex]
-            val worldLandmarks = if (handIndex < worldLandmarksList.size) worldLandmarksList[handIndex] else null
-            val handednessCategory = handednesses.getOrNull(handIndex)?.firstOrNull()
+        val numHands = landmarksList.size
+        if (numHands == 0) {
+            if (wasLeftTracked) {
+                NativeBridge.nativeResetHand(isLeft = true)
+                leftSmoothedDepth = -0.50f
+                leftSmoothedSpan = 0f
+                wasLeftTracked = false
+            }
+            if (wasRightTracked) {
+                NativeBridge.nativeResetHand(isLeft = false)
+                rightSmoothedDepth = -0.50f
+                rightSmoothedSpan = 0f
+                wasRightTracked = false
+            }
+            return
+        }
 
-            // In front-facing / ego camera: MediaPipe mirrors handedness label
-            // 'Left' category in ego camera corresponds to user's left hand
-            val categoryName = handednessCategory?.categoryName() ?: "Right"
-            val isLeft = categoryName.equals("Left", ignoreCase = true)
-            val confidence = handednessCategory?.score() ?: 0.9f
-
-            if (isLeft) leftDetected = true else rightDetected = true
-
-            // Hand root center in normalized camera view
+        // Build candidates with camera normalized horizontal center
+        val candidates = ArrayList<HandCandidate>(numHands)
+        for (i in 0 until numHands) {
+            val landmarks = landmarksList[i]
             val wrist = landmarks[0]
-            val normX = wrist.x()
-            val normY = wrist.y()
+            val middleMcp = landmarks.getOrNull(9) ?: landmarks.getOrNull(5) ?: wrist
+            val centerX = (wrist.x() + middleMcp.x()) * 0.5f
 
-            // Project 2D normalized camera ray to 3D metric camera space (50cm in front of eyes)
-            val baseZ = -0.50f
-            val baseSpatialX = (normX - 0.5f) * 0.65f
-            val baseSpatialY = (0.5f - normY) * 0.50f
+            val handednessCategory = handednesses.getOrNull(i)?.firstOrNull()
+            val categoryName = handednessCategory?.categoryName() ?: "Right"
+            val rawIsLeft = categoryName.equals("Left", ignoreCase = true)
+            val score = handednessCategory?.score() ?: 0.9f
 
-            val jointsArray = FloatArray(21 * 3)
+            candidates.add(HandCandidate(i, centerX, rawIsLeft, score))
+        }
 
-            for (j in 0 until 21) {
-                if (worldLandmarks != null && j < worldLandmarks.size) {
-                    val w = worldLandmarks[j]
-                    // World landmarks are in metric meters centered at the wrist
-                    jointsArray[j * 3 + 0] = baseSpatialX + w.x()
-                    jointsArray[j * 3 + 1] = baseSpatialY - w.y() // Flip Y from image down to 3D up
-                    jointsArray[j * 3 + 2] = baseZ + w.z()
+        var leftCandidate: HandCandidate? = null
+        var rightCandidate: HandCandidate? = null
+
+        if (numHands == 1) {
+            val cand = candidates[0]
+            // Spatial assignment based on camera FOV position and temporal continuity
+            val assignIsLeft = when {
+                cand.centerX < 0.42f -> true  // Strongly in left half of user view
+                cand.centerX > 0.58f -> false // Strongly in right half of user view
+                wasLeftTracked && !wasRightTracked -> true // Persistent left hand
+                wasRightTracked && !wasLeftTracked -> false // Persistent right hand
+                else -> cand.rawCategoryIsLeft
+            }
+            if (assignIsLeft) {
+                leftCandidate = cand
+            } else {
+                rightCandidate = cand
+            }
+        } else {
+            // Two or more hands in view: sort candidates strictly by horizontal coordinate
+            // In egocentric AR glasses, left hand is on user's left (smaller X), right on user's right (larger X)
+            candidates.sortBy { it.centerX }
+            val candLeft = candidates[0]
+            val candRight = candidates[1]
+
+            // Temporal continuity check for rare hand-crossing situations
+            if (wasLeftTracked && wasRightTracked) {
+                val costNormal = Math.abs(candLeft.centerX - leftSmoothedNormX) + Math.abs(candRight.centerX - rightSmoothedNormX)
+                val costSwapped = Math.abs(candRight.centerX - leftSmoothedNormX) + Math.abs(candLeft.centerX - rightSmoothedNormX)
+                if (costSwapped < costNormal * 0.55f) {
+                    leftCandidate = candRight
+                    rightCandidate = candLeft
                 } else {
-                    val l = landmarks[j]
-                    jointsArray[j * 3 + 0] = (l.x() - 0.5f) * 0.65f
-                    jointsArray[j * 3 + 1] = (0.5f - l.y()) * 0.50f
-                    jointsArray[j * 3 + 2] = baseZ + (l.z() * 0.15f)
+                    leftCandidate = candLeft
+                    rightCandidate = candRight
+                }
+            } else {
+                leftCandidate = candLeft
+                rightCandidate = candRight
+            }
+        }
+
+        // Process assigned Left hand strictly in left buffer
+        if (leftCandidate != null) {
+            val idx = leftCandidate.handIndex
+            val landmarks = landmarksList[idx]
+            val worldLandmarks = if (idx < worldLandmarksList.size) worldLandmarksList[idx] else null
+            processSingleHand(isLeft = true, landmarks, worldLandmarks, leftCandidate.confidence)
+        } else if (wasLeftTracked) {
+            NativeBridge.nativeResetHand(isLeft = true)
+            leftSmoothedDepth = -0.50f
+            leftSmoothedSpan = 0f
+            wasLeftTracked = false
+        }
+
+        // Process assigned Right hand strictly in right buffer
+        if (rightCandidate != null) {
+            val idx = rightCandidate.handIndex
+            val landmarks = landmarksList[idx]
+            val worldLandmarks = if (idx < worldLandmarksList.size) worldLandmarksList[idx] else null
+            processSingleHand(isLeft = false, landmarks, worldLandmarks, rightCandidate.confidence)
+        } else if (wasRightTracked) {
+            NativeBridge.nativeResetHand(isLeft = false)
+            rightSmoothedDepth = -0.50f
+            rightSmoothedSpan = 0f
+            wasRightTracked = false
+        }
+    }
+
+    private fun processSingleHand(
+        isLeft: Boolean,
+        landmarks: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        worldLandmarks: List<com.google.mediapipe.tasks.components.containers.Landmark>?,
+        confidence: Float
+    ) {
+        val wrist = landmarks[0]
+        val normX = wrist.x()
+        val normY = wrist.y()
+
+        // Dynamic optical depth estimation from palm span (wrist to middle MCP)
+        val middleMcp = landmarks.getOrNull(9) ?: landmarks.getOrNull(5) ?: wrist
+        val spanDx = middleMcp.x() - wrist.x()
+        val spanDy = middleMcp.y() - wrist.y()
+        val rawPalmSpan = Math.sqrt((spanDx * spanDx + spanDy * spanDy).toDouble()).toFloat().coerceIn(0.04f, 0.45f)
+
+        // Denoise palm span against single-pixel camera flutter
+        val prevSpan = if (isLeft) leftSmoothedSpan else rightSmoothedSpan
+        val filteredSpan = if (prevSpan > 0.01f) {
+            val spanDiff = Math.abs(rawPalmSpan - prevSpan)
+            if (spanDiff < 0.002f) prevSpan else prevSpan * 0.80f + rawPalmSpan * 0.20f
+        } else {
+            rawPalmSpan
+        }
+        if (isLeft) leftSmoothedSpan = filteredSpan else rightSmoothedSpan = filteredSpan
+
+        // Pinhole camera depth: smaller palm span in image -> deeper in front of camera
+        val rawDepth = -(0.0825f / filteredSpan).coerceIn(-1.30f, -0.25f)
+        val prevDepth = if (isLeft) leftSmoothedDepth else rightSmoothedDepth
+        val depthDiff = Math.abs(rawDepth - prevDepth)
+        // Deadband: small depth fluctuations (< 1.5 cm) are suppressed to eliminate depth chatter
+        val targetDepth = if (depthDiff < 0.015f) prevDepth else rawDepth
+        val smoothedDepth = prevDepth * 0.75f + targetDepth * 0.25f
+        if (isLeft) leftSmoothedDepth = smoothedDepth else rightSmoothedDepth = smoothedDepth
+        val baseZ = smoothedDepth
+
+        // Smooth 2D wrist normalized coordinates to stabilize base spatial origin
+        val prevNormX = if (isLeft) leftSmoothedNormX else rightSmoothedNormX
+        val prevNormY = if (isLeft) leftSmoothedNormY else rightSmoothedNormY
+        val nxDiff = Math.abs(normX - prevNormX)
+        val nyDiff = Math.abs(normY - prevNormY)
+        val smoothedNormX = if (nxDiff < 0.002f) prevNormX else prevNormX * 0.60f + normX * 0.40f
+        val smoothedNormY = if (nyDiff < 0.002f) prevNormY else prevNormY * 0.60f + normY * 0.40f
+        if (isLeft) {
+            leftSmoothedNormX = smoothedNormX
+            leftSmoothedNormY = smoothedNormY
+        } else {
+            rightSmoothedNormX = smoothedNormX
+            rightSmoothedNormY = smoothedNormY
+        }
+
+        // Metric spatial X and Y scaled with true hand depth
+        val absZ = Math.abs(baseZ)
+        val baseSpatialX = (smoothedNormX - 0.5f) * absZ * 1.30f
+        val baseSpatialY = (0.5f - smoothedNormY) * absZ * 1.00f
+
+        val jointsArray = FloatArray(21 * 3)
+
+        for (j in 0 until 21) {
+            if (worldLandmarks != null && j < worldLandmarks.size) {
+                val w = worldLandmarks[j]
+                jointsArray[j * 3 + 0] = baseSpatialX + w.x()
+                jointsArray[j * 3 + 1] = baseSpatialY - w.y() // Flip Y from image down to 3D up
+                jointsArray[j * 3 + 2] = baseZ + w.z()
+            } else {
+                val l = landmarks[j]
+                jointsArray[j * 3 + 0] = (l.x() - 0.5f) * absZ * 1.30f
+                jointsArray[j * 3 + 1] = (0.5f - l.y()) * absZ * 1.00f
+                jointsArray[j * 3 + 2] = baseZ + (l.z() * 0.15f)
+            }
+        }
+
+        // Temporal velocity-adaptive smoothing across all 21 joint coordinates (toned down ~20% for faster responsiveness)
+        val smoothedJoints = if (isLeft) leftSmoothedJoints else rightSmoothedJoints
+        val wasTracked = if (isLeft) wasLeftTracked else wasRightTracked
+        if (!wasTracked) {
+            System.arraycopy(jointsArray, 0, smoothedJoints, 0, 63)
+            if (isLeft) wasLeftTracked = true else wasRightTracked = true
+        } else {
+            for (k in 0 until 63) {
+                val delta = jointsArray[k] - smoothedJoints[k]
+                val absDelta = Math.abs(delta)
+                if (absDelta > 0.20f) {
+                    // Large jump (> 20cm): snap immediately, never drag across screen
+                    smoothedJoints[k] = jointsArray[k]
+                } else {
+                    val alpha = when {
+                        absDelta < 0.003f -> 0.22f // < 3mm: suppress detector jitter
+                        absDelta < 0.030f -> 0.58f // 3-30mm: fluid interactive tracking
+                        absDelta < 0.080f -> 0.85f // 30-80mm: responsive follow
+                        else -> 0.98f              // fast motion
+                    }
+                    smoothedJoints[k] += delta * alpha
+                    jointsArray[k] = smoothedJoints[k]
                 }
             }
-
-            NativeBridge.nativeUpdateHandJoints(isLeft, jointsArray, confidence)
         }
 
-        if (!leftDetected) {
-            NativeBridge.nativeResetHand(isLeft = true)
-        }
-        if (!rightDetected) {
-            NativeBridge.nativeResetHand(isLeft = false)
-        }
+        NativeBridge.nativeUpdateHandJoints(isLeft, jointsArray, confidence)
     }
 
     fun close() {
