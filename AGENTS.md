@@ -3,6 +3,7 @@
 ## 1. XR Display & Presentation Lifecycle
 - **Never detach presentation displays on `onPause()`**: System dialogs (e.g., USB permissions, runtime dialogs) pause the activity. Calling `presentationManager.detachDisplay()` in `onPause()` causes screen blanking in the glasses. Only detach displays in `onDestroy()` or when `DisplayListener.onDisplayRemoved()` fires.
 - **Maintain active SurfaceView rendering**: External XR displays require an active hardware canvas render thread (`lockHardwareCanvas()`) at 60 FPS. Idle presentation surfaces risk being marked as `mSleeping=true` by SurfaceFlinger.
+- **Decouple Compositor Lifecycle from Hardware Streaming**: Display mode toggles (2D to 3D SBS) re-enumerate the presentation surface. `nativeShutdownCompositor()` must NEVER stop `gVitureHandle`, `CarinaDeviceProvider`, or camera stream threads; hardware handles belong strictly to the physical USB connection lifecycle.
 
 ## 2. Android 14+ (API 34) USB Host Security
 - **Explicit PendingIntents for USB permissions**: When using `PendingIntent.FLAG_MUTABLE` with `UsbManager.requestPermission()`, always set the explicit package:
@@ -11,15 +12,24 @@
   val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
   ```
 - **BroadcastReceiver registration**: When listening for system USB events (`ACTION_USB_DEVICE_ATTACHED`) on API 33+, use `Context.RECEIVER_EXPORTED`.
+- **Filter Detach Events by Tracking PIDs**: VITURE glasses expose composite USB interfaces (e.g., microphone `0x1102`, tracking `0x1104`). Never check only `vendorId == VITURE_VENDOR_ID` on `ACTION_USB_DEVICE_DETACHED`. Always verify `device.productId in VITURE_PIDS` so audio re-enumeration does not terminate camera tracking.
 
-## 3. USB UVC Streaming & Isochronous Transfers
+## 3. USB Tracking Cameras & Fallback Hierarchy
 - **Validate `UsbRequest.initialize`**: Isochronous endpoints are not universally supported across all Android vendor HALs in Java `UsbRequest`. Always check:
   ```kotlin
   val req = UsbRequest()
   if (!req.initialize(connection, endpoint)) { req.close(); null }
   ```
-- **Dual Tracking Fallback**: Pair USB camera feeds with a background Camera2 fallback (`ImageReader` YUV420) so optical tracking continues smoothly while USB permissions or streams negotiate.
+- **Primary vs. Fallback Camera Hierarchy**: Glasses USB tracking cameras (e.g. VITURE Carina stereo) are strictly primary. Phone Camera2 (selfie/front) is strictly a disconnected fallback that MUST immediately cease once glasses camera streams open.
 
 ## 4. Hardware Connectivity & Wireless ADB
 - **Single USB-C Port Management**: When glasses occupy the physical USB-C port, always inspect wireless debugging via mDNS (`adb -s adb-<SERIAL>._adb-tls-connect._tcp ...`).
 - **Command Quoting**: In Zsh environments, quote all wildcards (`"*:E"`, `"/dev/bus/usb/*"`) to avoid local shell expansion errors.
+
+## 5. Android 15 (API 35) 16 KB ELF Page Alignment
+- **16 KB Segment Alignment Invariant**: Android 15 requires all native `.so` files to have 16 KB page alignment (`2**14`). Compile native code with `-Wl,-z,max-page-size=16384` and verify APKs with `check_elf_alignment.sh`.
+- **ABI Target Restrictions**: When integrating prebuilt vendor binaries, enforce `ndk.abiFilters += listOf("arm64-v8a")` in `app/build.gradle.kts` to avoid unaligned or missing 32-bit slices.
+
+## 6. Vision Tracking Exposure & Dynamic Range
+- **Prioritize Hardware Auto-Exposure**: Enable camera hardware AEC (`xr_device_provider_set_auto_exposure_carina`) before falling back to manual exposure.
+- **Percentile LUT Grayscale Normalization**: Never use naive min/max contrast stretching on wide-FOV camera frames; room lights or hot spots prevent expansion. Use a 256-bin histogram percentile stretch (2nd to 98th percentile) with a 256-entry lookup table (LUT) to guarantee full [0, 255] dynamic range for MediaPipe.

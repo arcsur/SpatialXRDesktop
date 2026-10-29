@@ -10,6 +10,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/hardware
     ${CMAKE_CURRENT_SOURCE_DIR}/tracking
     ${CMAKE_CURRENT_SOURCE_DIR}/openxr
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/viture
 )
 
 file(GLOB_RECURSE SPATIAL_SOURCES
@@ -18,6 +19,12 @@ file(GLOB_RECURSE SPATIAL_SOURCES
 
 # Filter out test sources if any in main cpp tree
 list(FILTER SPATIAL_SOURCES EXCLUDE REGEX ".*_test\\.cpp$")
+
+set(JNILIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")
+add_library(glasses SHARED IMPORTED)
+set_target_properties(glasses PROPERTIES
+    IMPORTED_LOCATION "${JNILIBS_DIR}/libglasses.so"
+)
 
 add_library(spatial_xr SHARED
     ${SPATIAL_SOURCES}
@@ -31,4 +38,10 @@ target_link_libraries(spatial_xr
     ${log-lib}
     ${android-lib}
     ${vulkan-lib}
+    glasses
+)
+
+target_link_options(spatial_xr PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
 )

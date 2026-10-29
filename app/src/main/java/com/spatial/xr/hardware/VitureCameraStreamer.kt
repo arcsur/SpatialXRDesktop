@@ -12,22 +12,17 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
-import android.hardware.usb.UsbEndpoint
-import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
-import android.hardware.usb.UsbRequest
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.spatial.xr.bridge.NativeBridge
-import java.nio.ByteBuffer
+import com.spatial.xr.tracking.MediaPipeHandTracker
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VitureCameraStreamer(
@@ -40,14 +35,26 @@ class VitureCameraStreamer(
         const val SONIX_VENDOR_ID = 3141 // 0x0C45
         const val SONIX_PRODUCT_ID = 25451 // 0x636B
         const val VITURE_VENDOR_ID = 13770 // 0x35CA
+
+        val VITURE_PIDS = setOf(
+            0x1011, 0x1013, 0x1015, 0x1017, 0x101B,
+            0x1019, 0x101D,
+            0x1121, 0x1131, 0x1141, 0x1151,
+            0x1101, 0x1104, // Luma Ultra
+            0x1201, 0x1211,
+            0x1221
+        )
     }
 
     private val isRunning = AtomicBoolean(false)
-    private var usbDevice: UsbDevice? = null
-    private var usbConnection: UsbDeviceConnection? = null
-    private var uvcStreamThread: Thread? = null
+    private val isGlassesStreaming = AtomicBoolean(false)
 
-    // Fallback/dual Camera2 tracking
+    private var glassesConnection: UsbDeviceConnection? = null
+    private var cameraConnection: UsbDeviceConnection? = null
+    private var glassesStreamThread: Thread? = null
+    private var mediaPipeTracker: MediaPipeHandTracker? = null
+
+    // Fallback Camera2 tracking (only active when glasses are disconnected)
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var imageReader: ImageReader? = null
@@ -58,25 +65,34 @@ class VitureCameraStreamer(
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
+            val device: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+            }
+
             if (ACTION_USB_PERMISSION == intent.action) {
                 synchronized(this) {
-                    val device: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                    }
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         if (device != null) {
                             Log.i(TAG, "USB Permission GRANTED for ${device.productName} (${device.vendorId}:${device.productId})")
-                            startUvcDeviceStreaming(device)
+                            onUsbDevicePermitted(device)
                         }
                     } else {
                         Log.w(TAG, "USB Permission DENIED for ${device?.productName}")
                     }
                 }
             } else if (UsbManager.ACTION_USB_DEVICE_ATTACHED == intent.action) {
-                checkAndConnectVitureCamera()
+                checkAndConnectDevices()
+            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
+                if (device != null && device.vendorId == VITURE_VENDOR_ID && device.productId in VITURE_PIDS) {
+                    Log.i(TAG, "VITURE glasses detached: ${device.productName}. Activating Camera2 fallback.")
+                    stopGlassesStreaming()
+                    if (isRunning.get()) {
+                        startCamera2Stream()
+                    }
+                }
             }
         }
     }
@@ -87,6 +103,8 @@ class VitureCameraStreamer(
 
     fun startStreaming() {
         if (isRunning.getAndSet(true)) return
+
+        mediaPipeTracker = MediaPipeHandTracker(context)
 
         val filter = IntentFilter(ACTION_USB_PERMISSION).apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -100,11 +118,14 @@ class VitureCameraStreamer(
 
         startBackgroundThread()
 
-        // 1. Attempt connection to VITURE Glasses Stereo Camera
-        checkAndConnectVitureCamera()
-
-        // 2. Start Camera2 feed as baseline / dual tracking provider
-        startCamera2Stream()
+        val glasses = findVitureGlassesDevice()
+        if (glasses != null) {
+            Log.i(TAG, "VITURE glasses detected on startup: ${glasses.productName}")
+            checkAndConnectDevices()
+        } else {
+            Log.i(TAG, "No glasses attached yet: starting phone Camera2 fallback.")
+            startCamera2Stream()
+        }
     }
 
     fun stopStreaming() {
@@ -112,200 +133,182 @@ class VitureCameraStreamer(
 
         try {
             context.unregisterReceiver(usbReceiver)
-        } catch (e: Exception) {
-            // Receiver might not be registered
-        }
+        } catch (_: Exception) {}
 
-        stopUvcStreaming()
+        stopGlassesStreaming()
         stopCamera2Stream()
         stopBackgroundThread()
+
+        mediaPipeTracker?.close()
+        mediaPipeTracker = null
     }
 
     fun isTrackingActive(): Boolean = isRunning.get()
 
-    private fun checkAndConnectVitureCamera() {
-        val device = findVitureCameraDevice()
-        if (device != null) {
-            usbDevice = device
-            Log.i(TAG, "Found optical tracking camera: ${device.productName} [${device.vendorId}:${device.productId}]")
-            if (usbManager.hasPermission(device)) {
-                startUvcDeviceStreaming(device)
+    private fun checkAndConnectDevices() {
+        val glasses = findVitureGlassesDevice()
+        if (glasses != null) {
+            if (usbManager.hasPermission(glasses)) {
+                startGlassesStreaming(glasses)
             } else {
-                Log.i(TAG, "Requesting USB permission for ${device.productName}")
-                val intent = Intent(ACTION_USB_PERMISSION).apply {
-                    setPackage(context.packageName)
-                }
-                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    PendingIntent.FLAG_MUTABLE
-                } else {
-                    0
-                }
-                val permissionIntent = PendingIntent.getBroadcast(
-                    context, 0, intent, flags
-                )
-                usbManager.requestPermission(device, permissionIntent)
+                requestDevicePermission(glasses)
             }
         } else {
-            Log.d(TAG, "VITURE USB camera not found yet, operating on Camera2 feed")
+            if (cameraDevice == null && isRunning.get() && !isGlassesStreaming.get()) {
+                startCamera2Stream()
+            }
         }
     }
 
-    fun findVitureCameraDevice(): UsbDevice? {
+    fun findVitureGlassesDevice(): UsbDevice? {
         val list = usbManager.deviceList ?: return null
         for (device in list.values) {
-            if (device.vendorId == SONIX_VENDOR_ID || device.vendorId == VITURE_VENDOR_ID) {
-                // Check if device has video streaming interface (class 14 / 0x0E)
-                for (i in 0 until device.interfaceCount) {
-                    val iface = device.getInterface(i)
-                    if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO) {
-                        return device
-                    }
-                }
-                if (device.vendorId == SONIX_VENDOR_ID) {
-                    return device
-                }
+            if (device.vendorId == VITURE_VENDOR_ID && device.productId in VITURE_PIDS) {
+                return device
+            }
+            val name = (device.productName ?: "") + " " + (device.manufacturerName ?: "")
+            if (name.contains("VITURE", ignoreCase = true) && device.vendorId == VITURE_VENDOR_ID) {
+                return device
             }
         }
         return null
     }
 
-    private fun startUvcDeviceStreaming(device: UsbDevice) {
-        stopUvcStreaming()
+    fun findVitureRgbCameraDevice(): UsbDevice? {
+        val list = usbManager.deviceList ?: return null
+        return list.values.firstOrNull { it.vendorId == SONIX_VENDOR_ID && it.productId == SONIX_PRODUCT_ID }
+    }
+
+    private fun requestDevicePermission(device: UsbDevice) {
+        Log.i(TAG, "Requesting USB permission for ${device.productName} [0x${Integer.toHexString(device.vendorId)}:0x${Integer.toHexString(device.productId)}]")
+        val intent = Intent(ACTION_USB_PERMISSION).apply {
+            setPackage(context.packageName)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE
+        } else {
+            0
+        }
+        val permissionIntent = PendingIntent.getBroadcast(
+            context, 0, intent, flags
+        )
+        usbManager.requestPermission(device, permissionIntent)
+    }
+
+    private fun onUsbDevicePermitted(device: UsbDevice) {
+        if (device.vendorId == VITURE_VENDOR_ID || (device.productName ?: "").contains("VITURE", ignoreCase = true)) {
+            startGlassesStreaming(device)
+        }
+    }
+
+    private fun startGlassesStreaming(device: UsbDevice) {
+        if (isGlassesStreaming.get()) return
+        stopGlassesStreaming()
 
         val connection = usbManager.openDevice(device) ?: run {
-            Log.e(TAG, "Failed to open USB device: ${device.deviceName}")
+            Log.e(TAG, "Failed to open USB glasses device: ${device.deviceName}")
             return
         }
-        usbConnection = connection
+        glassesConnection = connection
+        val fd = connection.fileDescriptor
+        Log.i(TAG, "Initializing VITURE glasses SDK with PID=0x${Integer.toHexString(device.productId)}, fd=$fd")
 
-        // Locate VideoStreaming interface (class 14, subclass 2)
-        var streamingInterface: UsbInterface? = null
-        var isocEndpoint: UsbEndpoint? = null
+        if (!NativeBridge.nativeVitureCreate(device.productId, fd)) {
+            Log.e(TAG, "nativeVitureCreate failed")
+            connection.close()
+            glassesConnection = null
+            return
+        }
 
-        for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO && iface.interfaceSubclass == 2) {
-                streamingInterface = iface
-                for (e in 0 until iface.endpointCount) {
-                    val ep = iface.getEndpoint(e)
-                    if (ep.direction == UsbConstants.USB_DIR_IN) {
-                        isocEndpoint = ep
+        if (!NativeBridge.nativeVitureStartCarina()) {
+            Log.e(TAG, "nativeVitureStartCarina failed")
+            NativeBridge.nativeVitureStop()
+            connection.close()
+            glassesConnection = null
+            return
+        }
+
+        isGlassesStreaming.set(true)
+        Log.i(TAG, "VITURE Carina stereo cameras active. Disabling phone Camera2 fallback.")
+        stopCamera2Stream() // Immediately stop phone camera fallback!
+
+        glassesStreamThread = Thread({
+            val frameBuf = ByteArray(1280 * 800)
+            var frameCount = 0
+            while (isRunning.get() && isGlassesStreaming.get()) {
+                val dims = NativeBridge.nativeVitureGetCarinaFrame(frameBuf)
+                if (dims != null && dims.size >= 2) {
+                    val w = dims[0]
+                    val h = dims[1]
+                    frameCount++
+                    if (frameCount % 60 == 1) {
+                        var sum = 0L
+                        var minVal = 255
+                        var maxVal = 0
+                        val sampleStep = 16
+                        val totalSamples = (w * h) / sampleStep
+                        for (i in 0 until (w * h) step sampleStep) {
+                            val v = frameBuf[i].toInt() and 0xFF
+                            sum += v
+                            if (v < minVal) minVal = v
+                            if (v > maxVal) maxVal = v
+                        }
+                        val avg = if (totalSamples > 0) sum / totalSamples else 0
+                        Log.i(TAG, "Viture Carina stereo camera frame received #$frameCount (${w}x${h}) [lum: min=$minVal, max=$maxVal, avg=$avg]")
+                    }
+                    mediaPipeTracker?.processGrayscaleFrame(w, h, frameBuf)
+                    onFrameProcessedListener?.invoke(true)
+                } else {
+                    try {
+                        Thread.sleep(8) // ~120 Hz poll
+                    } catch (_: InterruptedException) {
                         break
                     }
                 }
-                if (isocEndpoint != null) break
             }
-        }
-
-        if (streamingInterface == null) {
-            // Fallback: claim interface 1 directly as reported by dumpsys
-            if (device.interfaceCount > 1) {
-                streamingInterface = device.getInterface(1)
-                if (streamingInterface.endpointCount > 0) {
-                    isocEndpoint = streamingInterface.getEndpoint(0)
-                }
-            }
-        }
-
-        if (streamingInterface != null) {
-            connection.claimInterface(streamingInterface, true)
-            // SET_INTERFACE control transfer to activate isochronous streaming alt-setting 4
-            connection.controlTransfer(0x01, 0x0B, 4, streamingInterface.id, null, 0, 1000)
-        }
-
-        val targetEp = isocEndpoint
-        val fd = connection.fileDescriptor
-        Log.i(TAG, "UVC Camera device opened (fd=$fd, endpoint=${targetEp?.address})")
-
-        uvcStreamThread = Thread({
-            try {
-                val buffer = ByteBuffer.allocateDirect(targetEp?.maxPacketSize ?: 3072)
-                val request: UsbRequest? = if (targetEp != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    try {
-                        val req = UsbRequest()
-                        if (req.initialize(connection, targetEp)) req else {
-                            req.close()
-                            null
-                        }
-                    } catch (e: Throwable) {
-                        null
-                    }
-                } else null
-
-                val width = 640
-                val height = 480
-                val yPlane = ByteArray(width * height)
-                val uvPlane = ByteArray(width * height / 2)
-
-                while (isRunning.get() && usbConnection != null) {
-                    var packetReceived = false
-                    if (request != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        buffer.clear()
-                        try {
-                            if (request.queue(buffer)) {
-                                val waitReq = connection.requestWait()
-                                if (waitReq === request) {
-                                    packetReceived = true
-                                }
-                            }
-                        } catch (e: Throwable) {
-                            // Suppress queue errors on non-supported endpoint transfers
-                        }
-                    }
-
-                    if (!packetReceived) {
-                        try {
-                            Thread.sleep(16) // ~60 Hz polling
-                        } catch (e: InterruptedException) {
-                            break
-                        }
-                        continue
-                    }
-
-                    // Parse UVC packet header (Byte 0 = len, Byte 1 = flags)
-                    buffer.flip()
-                    val len = buffer.remaining()
-                    if (len > 12) {
-                        val headerLen = buffer.get().toInt() and 0xFF
-                        val flags = buffer.get().toInt() and 0xFF
-                        val isEof = (flags and 0x02) != 0
-
-                        val payloadLen = len - headerLen
-                        if (payloadLen > 0) {
-                            buffer.position(headerLen)
-                            buffer.get(yPlane, 0, payloadLen.coerceAtMost(yPlane.size))
-                        }
-
-                        if (isEof) {
-                            val tracked = NativeBridge.nativeProcessCameraFrame(width, height, yPlane, uvPlane)
-                            onFrameProcessedListener?.invoke(tracked)
-                        }
-                    }
-                }
-
-                request?.close()
-            } catch (t: Throwable) {
-                Log.w(TAG, "UVC stream thread exception: ${t.message}")
-            }
-        }, "VitureUvcStreamThread").apply {
+        }, "VitureCarinaStreamThread").apply {
             isDaemon = true
             start()
         }
     }
 
-    private fun stopUvcStreaming() {
-        uvcStreamThread?.interrupt()
-        uvcStreamThread = null
-        try {
-            usbConnection?.close()
-        } catch (e: Exception) {
-            // Ignore close exception
+    private fun startRgbCameraStreaming(device: UsbDevice) {
+        val connection = usbManager.openDevice(device) ?: return
+        cameraConnection = connection
+        val fd = connection.fileDescriptor
+        if (NativeBridge.nativeVitureCameraCreate(device.vendorId, device.productId, fd)) {
+            if (NativeBridge.nativeVitureCameraStart()) {
+                Log.i(TAG, "VITURE RGB Center Camera streaming active")
+            }
         }
-        usbConnection = null
+    }
+
+    private fun stopGlassesStreaming() {
+        isGlassesStreaming.set(false)
+        glassesStreamThread?.interrupt()
+        glassesStreamThread = null
+        NativeBridge.nativeVitureStop()
+
+        try {
+            glassesConnection?.close()
+        } catch (_: Exception) {}
+        glassesConnection = null
+
+        try {
+            cameraConnection?.close()
+        } catch (_: Exception) {}
+        cameraConnection = null
     }
 
     private fun startCamera2Stream() {
+        if (isGlassesStreaming.get()) {
+            Log.d(TAG, "Glasses camera already active. Skipping Camera2 fallback.")
+            return
+        }
+        if (cameraDevice != null) return
+
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Camera permission not granted for Camera2 tracking")
             return
         }
 
@@ -316,28 +319,38 @@ class VitureCameraStreamer(
                 chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
             } ?: cameraManager.cameraIdList.firstOrNull() ?: return
 
-            val w = 320
-            val h = 240
+            val w = 640
+            val h = 480
             imageReader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 2)
+            var camera2FrameCount = 0
             imageReader?.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
-                    val yBuffer = image.planes[0].buffer
-                    val uvBuffer = if (image.planes.size > 1) image.planes[1].buffer else null
+                    val yPlane = image.planes[0]
+                    val rowStride = yPlane.rowStride
+                    val buffer = yPlane.buffer
+                    val yBytes = ByteArray(w * h)
+                    if (rowStride == w) {
+                        buffer.get(yBytes, 0, minOf(buffer.remaining(), w * h))
+                    } else {
+                        for (row in 0 until h) {
+                            val pos = row * rowStride
+                            if (pos + w <= buffer.limit()) {
+                                buffer.position(pos)
+                                buffer.get(yBytes, row * w, w)
+                            }
+                        }
+                    }
 
-                    val yBytes = ByteArray(yBuffer.remaining())
-                    yBuffer.get(yBytes)
+                    camera2FrameCount++
+                    if (camera2FrameCount % 60 == 1) {
+                        Log.i(TAG, "Camera2 fallback frame received #$camera2FrameCount (${w}x${h})")
+                    }
 
-                    val uvBytes = if (uvBuffer != null) {
-                        val bytes = ByteArray(uvBuffer.remaining())
-                        uvBuffer.get(bytes)
-                        bytes
-                    } else null
-
-                    val tracked = NativeBridge.nativeProcessCameraFrame(w, h, yBytes, uvBytes)
-                    onFrameProcessedListener?.invoke(tracked)
+                    mediaPipeTracker?.processGrayscaleFrame(w, h, yBytes)
+                    onFrameProcessedListener?.invoke(true)
                 } catch (e: Exception) {
-                    // Suppress frame read exceptions during buffer recycle
+                    Log.w(TAG, "Camera2 frame read exception: ${e.message}")
                 } finally {
                     image.close()
                 }
@@ -345,16 +358,19 @@ class VitureCameraStreamer(
 
             cameraManager.openCamera(frontCameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    Log.i(TAG, "Camera2 fallback device opened successfully (id=$frontCameraId)")
                     cameraDevice = camera
                     createCaptureSession()
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
+                    Log.w(TAG, "Camera2 fallback device disconnected (id=$frontCameraId)")
                     camera.close()
                     cameraDevice = null
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
+                    Log.e(TAG, "Camera2 fallback device error: $error (id=$frontCameraId)")
                     camera.close()
                     cameraDevice = null
                 }
@@ -376,7 +392,7 @@ class VitureCameraStreamer(
                         addTarget(readerSurface)
                     }
                     session.setRepeatingRequest(request.build(), null, backgroundHandler)
-                    Log.i(TAG, "Camera2 hand tracking capture stream active @ 320x240")
+                    Log.i(TAG, "Camera2 fallback capture stream active @ 640x480")
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
@@ -396,9 +412,7 @@ class VitureCameraStreamer(
             cameraDevice = null
             imageReader?.close()
             imageReader = null
-        } catch (e: Exception) {
-            // Ignore cleanup exceptions
-        }
+        } catch (_: Exception) {}
     }
 
     private fun startBackgroundThread() {
@@ -414,8 +428,6 @@ class VitureCameraStreamer(
             backgroundThread?.join(500)
             backgroundThread = null
             backgroundHandler = null
-        } catch (e: Exception) {
-            // Ignore thread join interrupt
-        }
+        } catch (_: Exception) {}
     }
 }

@@ -166,12 +166,44 @@ void testTwoHandScaleAndLookAtPalm() {
     assert(!frameTracker.getHand(false).isTracked);
 }
 
+void testThumbAndIndexTrackingDots() {
+    HandTrackingQnn tracker;
+    tracker.initialize();
+
+    std::array<Joint3D, JOINT_COUNT> joints{};
+    joints[THUMB_TIP] = {-0.02f, 0.05f, -0.45f, 1.0f};
+    joints[INDEX_FINGER_TIP] = {0.01f, 0.08f, -0.48f, 1.0f};
+    tracker.updateHandJoints(true, joints, 0.98f);
+
+    float tx, ty, tz, ix, iy, iz;
+    bool ok = tracker.getThumbAndIndexPositions(true, tx, ty, tz, ix, iy, iz);
+    assert(ok);
+    assert(std::abs(tx - (-0.02f)) < 1e-4f);
+    assert(std::abs(ty - 0.05f) < 1e-4f);
+    assert(std::abs(tz - (-0.45f)) < 1e-4f);
+    assert(std::abs(ix - 0.01f) < 1e-4f);
+    assert(std::abs(iy - 0.08f) < 1e-4f);
+    assert(std::abs(iz - (-0.48f)) < 1e-4f);
+
+    // Untracked right hand returns false
+    bool rightOk = tracker.getThumbAndIndexPositions(false, tx, ty, tz, ix, iy, iz);
+    assert(!rightOk);
+
+    // Reset hand
+    tracker.resetHand(true);
+    assert(!tracker.getHand(true).isTracked);
+    assert(!tracker.getThumbAndIndexPositions(true, tx, ty, tz, ix, iy, iz));
+
+    std::cout << "[PASS] testThumbAndIndexTrackingDots\n";
+}
+
 #ifndef SPATIAL_COMBINED_TEST_RUNNER
 int main() {
     std::cout << "--- Running Phase 3 Native Tests ---\n";
     testIndexPointerRay();
     testPinchHysteresis();
     testTwoHandScaleAndLookAtPalm();
+    testThumbAndIndexTrackingDots();
     std::cout << "All Phase 3 Native Tests Passed!\n";
     return 0;
 }

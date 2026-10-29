@@ -3,9 +3,24 @@
 #include <android/native_window_jni.h>
 #include <android/log.h>
 #include <memory>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <atomic>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+
 #include "graphics/vulkan_compositor.hpp"
 #include "hardware/viture_device.hpp"
 #include "tracking/hand_tracking_qnn.hpp"
+
+#include "viture_version.h"
+#include "viture_glasses_provider.h"
+#include "viture_camera_provider.h"
+#include "viture_device.h"
+#include "viture_device_carina.h"
+#include "viture_protocol_public.h"
 
 #define LOG_TAG "SpatialXR_JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -17,6 +32,39 @@ namespace {
     std::unique_ptr<spatial::tracking::HandTrackingQnn> gHandTracker;
     ANativeWindow* gNativeWindow = nullptr;
 
+    // VITURE SDK State
+    XRDeviceProviderHandle gVitureHandle = nullptr;
+    XRCameraProviderHandle gVitureCameraHandle = nullptr;
+
+    struct CarinaFrameState {
+        std::mutex mtx;
+        std::vector<uint8_t> left;
+        std::vector<uint8_t> right;
+        int width = 0;
+        int height = 0;
+        uint32_t sequence = 0;
+        uint32_t lastRead = 0;
+    };
+    CarinaFrameState gCarinaFrame;
+
+    struct CameraFrameState {
+        std::mutex mtx;
+        std::vector<uint8_t> data;
+        uint32_t sequence = 0;
+        uint32_t lastRead = 0;
+    };
+    CameraFrameState gRgbCameraFrame;
+
+    struct CarinaPoseState {
+        std::mutex mtx;
+        float pose[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f}; // [px, py, pz, qw, qx, qy, qz]
+        bool fresh = false;
+    };
+    CarinaPoseState gCarinaPose;
+
+    std::atomic<bool> gCarinaPollRunning{false};
+    std::thread gCarinaPollThread;
+
     spatial::tracking::HandTrackingQnn* getOrCreateHandTracker() {
         if (!gHandTracker) {
             gHandTracker = std::make_unique<spatial::tracking::HandTrackingQnn>();
@@ -24,6 +72,45 @@ namespace {
             LOGI("HandTrackingQnn initialized");
         }
         return gHandTracker.get();
+    }
+
+    void onCarinaCamera(char* left0, char* right0,
+                        char* /*left1*/, char* /*right1*/,
+                        double /*ts*/, int width, int height) {
+        int size = width * height;
+        if (size <= 0 || !left0 || !right0) return;
+
+        {
+            std::lock_guard<std::mutex> lk(gCarinaFrame.mtx);
+            gCarinaFrame.left.assign(reinterpret_cast<uint8_t*>(left0),
+                                    reinterpret_cast<uint8_t*>(left0) + size);
+            gCarinaFrame.right.assign(reinterpret_cast<uint8_t*>(right0),
+                                     reinterpret_cast<uint8_t*>(right0) + size);
+            gCarinaFrame.width = width;
+            gCarinaFrame.height = height;
+            gCarinaFrame.sequence++;
+        }
+    }
+
+    void onRgbCamera(const XRCameraFrame* frame, void* /*user_data*/) {
+        if (!frame || !frame->data || frame->size == 0) return;
+        std::lock_guard<std::mutex> lk(gRgbCameraFrame.mtx);
+        gRgbCameraFrame.data.assign(frame->data, frame->data + frame->size);
+        gRgbCameraFrame.sequence++;
+    }
+
+    void carinaPollWorker() {
+        float pose[7] = {};
+        while (gCarinaPollRunning) {
+            int status = 1;
+            if (gVitureHandle &&
+                xr_device_provider_get_gl_pose_carina(gVitureHandle, pose, 0.0, &status) == VITURE_GLASSES_SUCCESS) {
+                std::lock_guard<std::mutex> lk(gCarinaPose.mtx);
+                memcpy(gCarinaPose.pose, pose, sizeof(pose));
+                gCarinaPose.fresh = true;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(8333)); // ~120 Hz
+        }
     }
 }
 
@@ -70,23 +157,22 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeShutdownCompositor(JNIEnv* /*env*/
         gCompositor->shutdown();
         gCompositor.reset();
     }
-    if (gVitureDevice) {
-        gVitureDevice->set3DMode(spatial::hardware::Display3DMode::Mode2D);
-        gVitureDevice->disconnect();
-        gVitureDevice.reset();
-    }
-    if (gHandTracker) {
-        gHandTracker.reset();
-    }
     if (gNativeWindow) {
         ANativeWindow_release(gNativeWindow);
         gNativeWindow = nullptr;
     }
-    LOGI("Compositor and HandTracker shut down");
+    LOGI("Compositor surface shut down");
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeSet3DMode(JNIEnv* /*env*/, jobject /*thiz*/, jboolean enabled) {
+    if (gVitureHandle) {
+        xr_device_provider_switch_dimension(gVitureHandle, enabled ? 1 : 0);
+        xr_device_provider_set_display_mode(
+            gVitureHandle,
+            enabled ? VITURE_DISPLAY_MODE_3840_1080_60HZ : VITURE_DISPLAY_MODE_1920_1080_60HZ
+        );
+    }
     if (!gVitureDevice) {
         gVitureDevice = std::make_unique<spatial::hardware::VitureDevice>();
         gVitureDevice->initialize();
@@ -115,8 +201,8 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeStopImuWorker(JNIEnv* /*env*/, job
 JNIEXPORT jboolean JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeGetLatestPose(JNIEnv* env, jobject /*thiz*/, jfloatArray outPoseArray) {
     if (!outPoseArray) return JNI_FALSE;
-    jfloat pose[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f}; // Identity quaternion qw=1
-    env->SetFloatArrayRegion(outPoseArray, 0, 7, pose);
+    std::lock_guard<std::mutex> lk(gCarinaPose.mtx);
+    env->SetFloatArrayRegion(outPoseArray, 0, 7, gCarinaPose.pose);
     return JNI_TRUE;
 }
 
@@ -151,6 +237,67 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeProcessCameraFrame(
     }
 
     return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeUpdateHandJoints(
+    JNIEnv* env, jobject /*thiz*/, jboolean isLeft, jfloatArray jointsArray, jfloat confidence
+) {
+    if (!jointsArray) return JNI_FALSE;
+    jsize len = env->GetArrayLength(jointsArray);
+    if (len < spatial::tracking::JOINT_COUNT * 3) return JNI_FALSE;
+
+    auto* tracker = getOrCreateHandTracker();
+    jfloat* rawJoints = env->GetFloatArrayElements(jointsArray, nullptr);
+
+    std::array<spatial::tracking::Joint3D, spatial::tracking::JOINT_COUNT> joints{};
+    for (size_t i = 0; i < spatial::tracking::JOINT_COUNT; ++i) {
+        joints[i].x = rawJoints[i * 3 + 0];
+        joints[i].y = rawJoints[i * 3 + 1];
+        joints[i].z = rawJoints[i * 3 + 2];
+        joints[i].confidence = confidence;
+    }
+
+    env->ReleaseFloatArrayElements(jointsArray, rawJoints, JNI_ABORT);
+    tracker->updateHandJoints(isLeft, joints, confidence);
+    tracker->updatePinchGesture(isLeft);
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeResetHand(JNIEnv* /*env*/, jobject /*thiz*/, jboolean isLeft) {
+    auto* tracker = getOrCreateHandTracker();
+    tracker->resetHand(isLeft);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeGetHandTrackingDots(
+    JNIEnv* env, jobject /*thiz*/, jfloatArray leftDots, jfloatArray rightDots
+) {
+    auto* tracker = getOrCreateHandTracker();
+    int mask = 0;
+
+    auto fillDots = [&](bool isLeft, jfloatArray outArray) {
+        if (!outArray) return;
+        float tx, ty, tz, ix, iy, iz;
+        if (tracker->getThumbAndIndexPositions(isLeft, tx, ty, tz, ix, iy, iz)) {
+            const auto& hand = tracker->getHand(isLeft);
+            bool pinching = tracker->isPinching(isLeft);
+            jfloat data[8] = {
+                tx, ty, tz,
+                ix, iy, iz,
+                pinching ? 1.0f : 0.0f,
+                hand.trackingConfidence
+            };
+            env->SetFloatArrayRegion(outArray, 0, 8, data);
+            mask |= (isLeft ? 1 : 2);
+        }
+    };
+
+    fillDots(true, leftDots);
+    fillDots(false, rightDots);
+
+    return mask;
 }
 
 JNIEXPORT jint JNICALL
@@ -280,6 +427,160 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeStopAtwThread(JNIEnv* /*env*/, job
 
 JNIEXPORT void JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeSubmitEyeFrame(JNIEnv* /*env*/, jobject /*thiz*/, jint /*eyeIndex*/, jint /*textureId*/, jlong /*poseTimestampNs*/) {
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureCreate(JNIEnv* /*env*/, jobject /*thiz*/, jint productId, jint fd) {
+    if (gVitureHandle) {
+        if (gCarinaPollRunning) {
+            gCarinaPollRunning = false;
+            if (gCarinaPollThread.joinable()) {
+                gCarinaPollThread.join();
+            }
+        }
+        xr_device_provider_stop(gVitureHandle);
+        xr_device_provider_shutdown(gVitureHandle);
+        xr_device_provider_destroy(gVitureHandle);
+        gVitureHandle = nullptr;
+    }
+
+    gVitureHandle = xr_device_provider_create(productId, fd);
+    if (!gVitureHandle) {
+        LOGE("xr_device_provider_create failed for PID 0x%04x, fd %d", productId, fd);
+        return JNI_FALSE;
+    }
+    LOGI("Viture device provider created for PID 0x%04x, fd %d", productId, fd);
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureStartCarina(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (!gVitureHandle) {
+        LOGE("nativeVitureStartCarina: gVitureHandle is null");
+        return JNI_FALSE;
+    }
+
+    xr_device_provider_set_dof_type_carina(gVitureHandle, 1);
+    xr_device_provider_register_callbacks_carina(gVitureHandle, nullptr, nullptr, nullptr, onCarinaCamera);
+
+    int initRes = xr_device_provider_initialize(gVitureHandle, nullptr, nullptr);
+    if (initRes != VITURE_GLASSES_SUCCESS) {
+        LOGE("xr_device_provider_initialize failed: %d", initRes);
+        return JNI_FALSE;
+    }
+
+    int startRes = xr_device_provider_start(gVitureHandle);
+    if (startRes != VITURE_GLASSES_SUCCESS) {
+        LOGE("xr_device_provider_start failed: %d", startRes);
+        return JNI_FALSE;
+    }
+
+    int expRes = xr_device_provider_set_auto_exposure_carina(gVitureHandle);
+    if (expRes != VITURE_GLASSES_SUCCESS) {
+        expRes = xr_device_provider_set_manual_exposure_carina(gVitureHandle, 8.0f, 15);
+    }
+    LOGI("Carina exposure set result (auto-exposure first): %d", expRes);
+
+    if (!gCarinaPollRunning) {
+        gCarinaPollRunning = true;
+        gCarinaPollThread = std::thread(carinaPollWorker);
+    }
+
+    LOGI("Carina device and stereo cameras started successfully");
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureStop(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (gCarinaPollRunning) {
+        gCarinaPollRunning = false;
+        if (gCarinaPollThread.joinable()) {
+            gCarinaPollThread.join();
+        }
+    }
+    if (gVitureHandle) {
+        xr_device_provider_stop(gVitureHandle);
+        xr_device_provider_shutdown(gVitureHandle);
+        xr_device_provider_destroy(gVitureHandle);
+        gVitureHandle = nullptr;
+    }
+    if (gVitureCameraHandle) {
+        xr_camera_provider_stop(gVitureCameraHandle);
+        xr_camera_provider_destroy(gVitureCameraHandle);
+        gVitureCameraHandle = nullptr;
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureGetCarinaFrame(JNIEnv* env, jobject /*thiz*/, jbyteArray outLeftFrame) {
+    if (!outLeftFrame) return nullptr;
+
+    std::lock_guard<std::mutex> lk(gCarinaFrame.mtx);
+    if (gCarinaFrame.sequence == gCarinaFrame.lastRead || gCarinaFrame.left.empty()) {
+        return nullptr;
+    }
+
+    gCarinaFrame.lastRead = gCarinaFrame.sequence;
+    jsize maxLen = env->GetArrayLength(outLeftFrame);
+    jsize copyLen = std::min(maxLen, static_cast<jsize>(gCarinaFrame.left.size()));
+
+    env->SetByteArrayRegion(outLeftFrame, 0, copyLen,
+                            reinterpret_cast<const jbyte*>(gCarinaFrame.left.data()));
+
+    jintArray dims = env->NewIntArray(2);
+    jint d[2] = {gCarinaFrame.width, gCarinaFrame.height};
+    env->SetIntArrayRegion(dims, 0, 2, d);
+    return dims;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureGetCameraVid(JNIEnv* /*env*/, jobject /*thiz*/, jint glassesPid) {
+    return xr_camera_provider_get_camera_vid(glassesPid);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureGetCameraPid(JNIEnv* /*env*/, jobject /*thiz*/, jint glassesPid) {
+    return xr_camera_provider_get_camera_pid(glassesPid);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureCameraCreate(JNIEnv* /*env*/, jobject /*thiz*/, jint vid, jint pid, jint fd) {
+    if (gVitureCameraHandle) {
+        xr_camera_provider_destroy(gVitureCameraHandle);
+        gVitureCameraHandle = nullptr;
+    }
+    gVitureCameraHandle = xr_camera_provider_create(vid, pid, fd);
+    return gVitureCameraHandle != nullptr ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureCameraStart(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (!gVitureCameraHandle) return JNI_FALSE;
+    int rc = xr_camera_provider_start(gVitureCameraHandle, onRgbCamera, nullptr);
+    return rc == VITURE_GLASSES_SUCCESS ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureCameraStop(JNIEnv* /*env*/, jobject /*thiz*/) {
+    if (!gVitureCameraHandle) return JNI_TRUE;
+    xr_camera_provider_stop(gVitureCameraHandle);
+    xr_camera_provider_destroy(gVitureCameraHandle);
+    gVitureCameraHandle = nullptr;
+    return JNI_TRUE;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeVitureCameraGetFrame(JNIEnv* env, jobject /*thiz*/) {
+    std::lock_guard<std::mutex> lk(gRgbCameraFrame.mtx);
+    if (gRgbCameraFrame.sequence == gRgbCameraFrame.lastRead || gRgbCameraFrame.data.empty()) {
+        return nullptr;
+    }
+    gRgbCameraFrame.lastRead = gRgbCameraFrame.sequence;
+    jsize sz = static_cast<jsize>(gRgbCameraFrame.data.size());
+    jbyteArray arr = env->NewByteArray(sz);
+    env->SetByteArrayRegion(arr, 0, sz, reinterpret_cast<const jbyte*>(gRgbCameraFrame.data.data()));
+    return arr;
 }
 
 } // extern "C"

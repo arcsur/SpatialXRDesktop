@@ -8,6 +8,9 @@ object NativeBridge {
 
     init {
         try {
+            try { System.loadLibrary("cloud_protocol") } catch (_: Throwable) {}
+            try { System.loadLibrary("carina_vio") } catch (_: Throwable) {}
+            try { System.loadLibrary("glasses") } catch (_: Throwable) {}
             System.loadLibrary("spatial_xr")
             isLoaded = true
         } catch (e: UnsatisfiedLinkError) {
@@ -32,6 +35,9 @@ object NativeBridge {
 
     // Phase 3: Hand Tracking & Gestures
     external fun nativeProcessCameraFrame(width: Int, height: Int, yPlane: ByteArray, uvPlane: ByteArray?): Boolean
+    external fun nativeUpdateHandJoints(isLeft: Boolean, jointCoords: FloatArray, confidence: Float): Boolean
+    external fun nativeResetHand(isLeft: Boolean)
+    external fun nativeGetHandTrackingDots(outLeftDots: FloatArray, outRightDots: FloatArray): Int
     external fun nativeGetHandPointers(outLeftRay: FloatArray, outRightRay: FloatArray): Int
     external fun nativeGetPinchState(): Int // Bit 0: Left, Bit 1: Right
     external fun nativeGetPinchPositions(outLeftPos: FloatArray, outRightPos: FloatArray): Int
@@ -46,4 +52,16 @@ object NativeBridge {
     external fun nativeStartAtwThread(): Boolean
     external fun nativeStopAtwThread()
     external fun nativeSubmitEyeFrame(eyeIndex: Int, textureId: Int, poseTimestampNs: Long)
+
+    // VITURE SDK Hardware & Stereo Camera
+    external fun nativeVitureCreate(productId: Int, fd: Int): Boolean
+    external fun nativeVitureStartCarina(): Boolean
+    external fun nativeVitureStop(): Boolean
+    external fun nativeVitureGetCarinaFrame(outLeftFrame: ByteArray): IntArray? // returns [width, height]
+    external fun nativeVitureGetCameraVid(glassesPid: Int): Int
+    external fun nativeVitureGetCameraPid(glassesPid: Int): Int
+    external fun nativeVitureCameraCreate(vid: Int, pid: Int, fd: Int): Boolean
+    external fun nativeVitureCameraStart(): Boolean
+    external fun nativeVitureCameraStop(): Boolean
+    external fun nativeVitureCameraGetFrame(): ByteArray?
 }

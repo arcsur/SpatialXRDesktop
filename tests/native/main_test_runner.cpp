@@ -14,6 +14,7 @@ void testUvcStreamer();
 void testIndexPointerRay();
 void testPinchHysteresis();
 void testTwoHandScaleAndLookAtPalm();
+void testThumbAndIndexTrackingDots();
 
 void testAtwIdentityWarp();
 void testAtwDifferentialRotationWarp();
@@ -39,6 +40,7 @@ int main() {
     testIndexPointerRay();
     testPinchHysteresis();
     testTwoHandScaleAndLookAtPalm();
+    testThumbAndIndexTrackingDots();
 
     std::cout << "\n--- [Phase 8: Asynchronous TimeWarp & OpenXR] ---\n";
     testAtwIdentityWarp();

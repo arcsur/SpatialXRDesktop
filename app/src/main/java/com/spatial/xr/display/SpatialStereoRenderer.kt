@@ -50,6 +50,23 @@ class SpatialStereoRenderer(
     @Volatile
     var isHandsTracked: Boolean = false
 
+    data class HandRenderInfo(
+        var isTracked: Boolean = false,
+        var thumbScreenX: Float = 0.5f,
+        var thumbScreenY: Float = 0.5f,
+        var indexScreenX: Float = 0.5f,
+        var indexScreenY: Float = 0.5f,
+        var pinchDistanceMeters: Float = 0.1f,
+        var isPinching: Boolean = false,
+        var aimScreenX: Float = 0.5f,
+        var aimScreenY: Float = 0.5f
+    )
+
+    val leftHandInfo = HandRenderInfo()
+    val rightHandInfo = HandRenderInfo()
+    private val leftDots = FloatArray(8)
+    private val rightDots = FloatArray(8)
+
     private val leftRay = FloatArray(6)
     private val rightRay = FloatArray(6)
     private val leftPinchPos = FloatArray(3)
@@ -57,7 +74,8 @@ class SpatialStereoRenderer(
 
     private var twoHandTransformActive = false
     private var activeTwoHandWindowId: Int = 1
-    private var lastPalmLookToggleTime = 0L
+    private var palmLookStartTime = 0L
+    private var palmLookCooldownUntil = 0L
     private var wasPinchingLastFrame = false
     private var singleHandRepositionActive = false
     private var singleHandRepositionWindowId: Int = 1
@@ -206,9 +224,9 @@ class SpatialStereoRenderer(
             drawWristDockAnchor(canvas, cx, cy, w, h)
         }
 
-        // 5. Draw 3D Laser Pointer Ray
-        if (isPointerActive) {
-            drawPointerRay(canvas, cx, cy, w, h)
+        // 5. Draw Dual-Hand Tracking Dots & Gesture Feedback
+        if (isHandsTracked || isPointerActive) {
+            drawHandTrackingVisuals(canvas, cx, cy, w, h)
         }
 
         // 6. Draw HUD Info Header
@@ -446,25 +464,116 @@ class SpatialStereoRenderer(
         canvas.drawText("🖐️ LOOK AT PALM FOR APPS", cx, anchorY + 5f, textPaint)
     }
 
-    private fun drawPointerRay(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float) {
-        val px = cx + (pointerX - 0.5f) * w
-        val py = cy + (pointerY - 0.5f) * h
+    private fun project3DToScreen(x: Float, y: Float, z: Float): Pair<Float, Float> {
+        val absZ = if (Math.abs(z) > 1e-4f) Math.abs(z) else 0.5f
+        val fovFactor = 0.55f * absZ
+        val nx = (x / fovFactor + 0.5f).coerceIn(0f, 1f)
+        val ny = (-y / (fovFactor * 0.75f) + 0.5f).coerceIn(0f, 1f)
+        return Pair(nx, ny)
+    }
 
-        // Laser beam from lower corner to pointer
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 3f
-        paint.color = Color.parseColor("#CC00E5FF")
-        canvas.drawLine(cx + w * 0.25f, h, px, py, paint)
+    private fun drawHandTrackingVisuals(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float) {
+        // 1. Two-Hand 3D Transformation Beam (Iron Man Gesture)
+        if (leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) {
+            val lpx = cx + (leftHandInfo.indexScreenX - 0.5f) * w
+            val lpy = cy + (leftHandInfo.indexScreenY - 0.5f) * h
+            val rpx = cx + (rightHandInfo.indexScreenX - 0.5f) * w
+            val rpy = cy + (rightHandInfo.indexScreenY - 0.5f) * h
 
-        // Cursor dot
-        paint.style = Paint.Style.FILL
-        paint.color = if (isPinching) Color.parseColor("#FFFF007F") else Color.parseColor("#FF00E5FF")
-        canvas.drawCircle(px, py, if (isPinching) 10f else 7f, paint)
+            // 3D dimension line connecting the two pinch points
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 3.5f
+            paint.color = Color.parseColor("#FFFF007F")
+            canvas.drawLine(lpx, lpy, rpx, rpy, paint)
 
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f
-        paint.color = Color.WHITE
-        canvas.drawCircle(px, py, if (isPinching) 15f else 12f, paint)
+            paint.strokeWidth = 1.5f
+            paint.color = Color.WHITE
+            canvas.drawLine(lpx, lpy, rpx, rpy, paint)
+
+            val midX = (lpx + rpx) * 0.5f
+            val midY = (lpy + rpy) * 0.5f
+            textPaint.textSize = 13f
+            textPaint.color = Color.parseColor("#FFFF007F")
+            canvas.drawText("⚡ 3D TWO-HAND TRANSFORM", midX, midY - 18f, textPaint)
+        }
+
+        // 2. Individual Tracking Dots for Thumb and Forefinger per Hand
+        val hands = listOf(leftHandInfo, rightHandInfo)
+        for (hand in hands) {
+            if (!hand.isTracked) continue
+
+            val tpx = cx + (hand.thumbScreenX - 0.5f) * w
+            val tpy = cy + (hand.thumbScreenY - 0.5f) * h
+            val ipx = cx + (hand.indexScreenX - 0.5f) * w
+            val ipy = cy + (hand.indexScreenY - 0.5f) * h
+
+            val dist = hand.pinchDistanceMeters
+
+            if (hand.isPinching || dist < 0.020f) {
+                // PINCHED: Dots magnetically fuse into a single glowing pinch reticle
+                val midPx = (tpx + ipx) * 0.5f
+                val midPy = (tpy + ipy) * 0.5f
+
+                // Outer pulsing glow ring
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 2.5f
+                paint.color = Color.WHITE
+                canvas.drawCircle(midPx, midPy, 15f, paint)
+
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#FFFF007F") // Vivid Magenta
+                canvas.drawCircle(midPx, midPy, 9f, paint)
+
+                paint.color = Color.WHITE
+                canvas.drawCircle(midPx, midPy, 4f, paint)
+            } else if (dist < 0.045f) {
+                // PROXIMITY APPROACH: Magnetic attraction arc between thumb & forefinger
+                val closeness = ((0.045f - dist) / 0.025f).coerceIn(0f, 1f)
+                val alpha = (closeness * 220 + 35).toInt()
+
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 2.5f * closeness + 1f
+                paint.color = Color.argb(alpha, 0, 229, 255)
+                canvas.drawLine(tpx, tpy, ipx, ipy, paint)
+
+                // Forefinger tip dot
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#FF00E5FF")
+                canvas.drawCircle(ipx, ipy, 7f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.5f
+                paint.color = Color.WHITE
+                canvas.drawCircle(ipx, ipy, 11f, paint)
+
+                // Thumb tip dot
+                paint.style = Paint.Style.FILL
+                paint.color = Color.WHITE
+                canvas.drawCircle(tpx, tpy, 6f, paint)
+            } else {
+                // OPEN HAND: Distinct tracking dots for thumb and forefinger
+                // Forefinger tip dot (Cyan precision aim dot)
+                paint.style = Paint.Style.FILL
+                paint.color = Color.parseColor("#FF00E5FF")
+                canvas.drawCircle(ipx, ipy, 6.5f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.5f
+                paint.color = Color.argb(180, 255, 255, 255)
+                canvas.drawCircle(ipx, ipy, 10f, paint)
+
+                // Thumb tip dot (Soft white anchor dot)
+                paint.style = Paint.Style.FILL
+                paint.color = Color.argb(200, 255, 255, 255)
+                canvas.drawCircle(tpx, tpy, 5f, paint)
+            }
+
+            // Subtle aiming reticle on workspace focal plane
+            val apx = cx + (hand.aimScreenX - 0.5f) * w
+            val apy = cy + (hand.aimScreenY - 0.5f) * h
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1.5f
+            paint.color = Color.argb(90, 0, 229, 255)
+            canvas.drawCircle(apx, apy, 8f, paint)
+        }
     }
 
     private fun drawHudHeader(canvas: Canvas, ox: Float, oy: Float, w: Float, h: Float, eyeName: String) {
@@ -485,25 +594,94 @@ class SpatialStereoRenderer(
     private fun updateHandTracking() {
         if (!NativeBridge.isNativeLoaded()) return
 
+        val dotsMask = NativeBridge.nativeGetHandTrackingDots(leftDots, rightDots)
         val handMask = NativeBridge.nativeGetHandPointers(leftRay, rightRay)
         val pinchMask = NativeBridge.nativeGetPinchState()
         val pinchPosMask = NativeBridge.nativeGetPinchPositions(leftPinchPos, rightPinchPos)
-        isHandsTracked = (handMask != 0)
+        isHandsTracked = (dotsMask != 0 || handMask != 0)
 
         val now = System.currentTimeMillis()
 
-        // 1. Look-at-Palm Gesture (Open/Close Apps Dock)
-        if (now - lastPalmLookToggleTime > 1500) {
-            val leftPalm = (handMask and 1 != 0) && NativeBridge.nativeIsLookingAtPalm(true)
-            val rightPalm = (handMask and 2 != 0) && NativeBridge.nativeIsLookingAtPalm(false)
-            if (leftPalm || rightPalm) {
+        // 1. Debounced Look-at-Palm Gesture (Open/Close Apps Dock)
+        // Requires holding palm facing eyes for at least 350ms continuously
+        val leftPalm = (handMask and 1 != 0) && NativeBridge.nativeIsLookingAtPalm(true)
+        val rightPalm = (handMask and 2 != 0) && NativeBridge.nativeIsLookingAtPalm(false)
+        val isLookingAtPalmNow = leftPalm || rightPalm
+
+        if (isLookingAtPalmNow) {
+            if (palmLookStartTime == 0L) {
+                palmLookStartTime = now
+            } else if (now - palmLookStartTime >= 350L && now > palmLookCooldownUntil) {
                 toggleDock()
-                lastPalmLookToggleTime = now
+                palmLookCooldownUntil = now + 1200L // 1.2s cooldown
+                palmLookStartTime = 0L
             }
+        } else {
+            palmLookStartTime = 0L
+        }
+
+        // Update Left Hand Info
+        leftHandInfo.isTracked = (dotsMask and 1 != 0)
+        if (leftHandInfo.isTracked) {
+            val tx = leftDots[0]; val ty = leftDots[1]; val tz = leftDots[2]
+            val ix = leftDots[3]; val iy = leftDots[4]; val iz = leftDots[5]
+            val (tnx, tny) = project3DToScreen(tx, ty, tz)
+            val (inx, iny) = project3DToScreen(ix, iy, iz)
+            leftHandInfo.thumbScreenX = tnx
+            leftHandInfo.thumbScreenY = tny
+            leftHandInfo.indexScreenX = inx
+            leftHandInfo.indexScreenY = iny
+            val dx = ix - tx; val dy = iy - ty; val dz = iz - tz
+            leftHandInfo.pinchDistanceMeters = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+            leftHandInfo.isPinching = (leftDots[6] > 0.5f) || (pinchMask and 1 != 0)
+
+            if (handMask and 1 != 0) {
+                val ox = leftRay[0]; val oy = leftRay[1]; val oz = leftRay[2]
+                val rdx = leftRay[3]; val rdy = leftRay[4]; val rdz = leftRay[5]
+                val t = if (Math.abs(rdz) > 1e-4f) (-1.2f - oz) / rdz else 1.0f
+                leftHandInfo.aimScreenX = ((ox + rdx * t) / 0.70f + 0.5f).coerceIn(0f, 1f)
+                leftHandInfo.aimScreenY = (-(oy + rdy * t) / 0.50f + 0.5f).coerceIn(0f, 1f)
+            } else {
+                leftHandInfo.aimScreenX = inx
+                leftHandInfo.aimScreenY = iny
+            }
+        } else {
+            leftHandInfo.isPinching = false
+        }
+
+        // Update Right Hand Info
+        rightHandInfo.isTracked = (dotsMask and 2 != 0)
+        if (rightHandInfo.isTracked) {
+            val tx = rightDots[0]; val ty = rightDots[1]; val tz = rightDots[2]
+            val ix = rightDots[3]; val iy = rightDots[4]; val iz = rightDots[5]
+            val (tnx, tny) = project3DToScreen(tx, ty, tz)
+            val (inx, iny) = project3DToScreen(ix, iy, iz)
+            rightHandInfo.thumbScreenX = tnx
+            rightHandInfo.thumbScreenY = tny
+            rightHandInfo.indexScreenX = inx
+            rightHandInfo.indexScreenY = iny
+            val dx = ix - tx; val dy = iy - ty; val dz = iz - tz
+            rightHandInfo.pinchDistanceMeters = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+            rightHandInfo.isPinching = (rightDots[6] > 0.5f) || (pinchMask and 2 != 0)
+
+            if (handMask and 2 != 0) {
+                val ox = rightRay[0]; val oy = rightRay[1]; val oz = rightRay[2]
+                val rdx = rightRay[3]; val rdy = rightRay[4]; val rdz = rightRay[5]
+                val t = if (Math.abs(rdz) > 1e-4f) (-1.2f - oz) / rdz else 1.0f
+                rightHandInfo.aimScreenX = ((ox + rdx * t) / 0.70f + 0.5f).coerceIn(0f, 1f)
+                rightHandInfo.aimScreenY = (-(oy + rdy * t) / 0.50f + 0.5f).coerceIn(0f, 1f)
+            } else {
+                rightHandInfo.aimScreenX = inx
+                rightHandInfo.aimScreenY = iny
+            }
+        } else {
+            rightHandInfo.isPinching = false
         }
 
         // 2. Iron Man Two-Hand Diagonal Corner Pinch (Simultaneous Resize, Reposition, Yaw Angle)
-        val bothPinching = (pinchMask and 3) == 3 && (pinchPosMask and 3) == 3
+        val bothPinching = (leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) ||
+                ((pinchMask and 3) == 3 && (pinchPosMask and 3) == 3)
+
         if (bothPinching) {
             val h1 = SpatialWindowManager.Vector3(leftPinchPos[0], leftPinchPos[1], leftPinchPos[2])
             val h2 = SpatialWindowManager.Vector3(rightPinchPos[0], rightPinchPos[1], rightPinchPos[2])
@@ -516,7 +694,7 @@ class SpatialStereoRenderer(
                 } else {
                     windowManager.updateTwoHandDiagonalTransform(activeTwoHandWindowId, h1, h2)
                 }
-                setPointer(0.5f, 0.5f, active = true, pinching = true)
+                isPinching = true
             }
         } else {
             if (twoHandTransformActive) {
@@ -524,27 +702,15 @@ class SpatialStereoRenderer(
                 twoHandTransformActive = false
             }
 
-            // 3. Single-Hand Laser Pointer Ray & Interactions
-            val activeRay = if (handMask and 2 != 0) rightRay else if (handMask and 1 != 0) leftRay else null
-            val isCurrentHandPinching = if (handMask and 2 != 0) (pinchMask and 2 != 0) else (pinchMask and 1 != 0)
-
-            if (activeRay != null) {
-                val ox = activeRay[0]
-                val oy = activeRay[1]
-                val oz = activeRay[2]
-                val dx = activeRay[3]
-                val dy = activeRay[4]
-                val dz = activeRay[5]
-
-                // Intersection with focal plane at Z = -1.2m
+            // 3. Single-Hand Pointer Ray & Interactions
+            val primaryHand = if (rightHandInfo.isTracked) rightHandInfo else if (leftHandInfo.isTracked) leftHandInfo else null
+            if (primaryHand != null) {
+                val isCurrentHandPinching = primaryHand.isPinching
+                val normX = primaryHand.aimScreenX
+                val normY = primaryHand.aimScreenY
+                val hitX = (normX - 0.5f) * 0.70f
+                val hitY = (0.5f - normY) * 0.50f
                 val targetZ = -1.2f
-                val t = if (Math.abs(dz) > 1e-4f) (targetZ - oz) / dz else 1.0f
-                val hitX = ox + dx * t
-                val hitY = oy + dy * t
-
-                // Normalized screen coordinates
-                val normX = (hitX / 0.70f + 0.5f).coerceIn(0f, 1f)
-                val normY = (-hitY / 0.50f + 0.5f).coerceIn(0f, 1f)
 
                 setPointer(normX, normY, active = true, pinching = isCurrentHandPinching)
 
@@ -555,6 +721,8 @@ class SpatialStereoRenderer(
                 wasPinchingLastFrame = isCurrentHandPinching
             } else {
                 wasPinchingLastFrame = false
+                isPointerActive = false
+                isPinching = false
             }
         }
     }

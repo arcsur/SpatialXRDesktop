@@ -18,10 +18,14 @@ include_directories(
 )
 
 # Common mock/host headers for tests running without Android NDK
-add_definitions(-DSPATIAL_XR_HOST_TEST=1)
+add_definitions(-DSPATIAL_XR_HOST_TEST=1 -DSPATIAL_COMBINED_TEST_RUNNER=1)
 
 file(GLOB_RECURSE TEST_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/native/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/cpp/graphics/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/cpp/hardware/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/cpp/tracking/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/cpp/openxr/*.cpp
 )
 
 if (TEST_SOURCES)

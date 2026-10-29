@@ -22,6 +22,36 @@ void HandTrackingQnn::updateHandJoints(bool isLeft, const std::array<Joint3D, JO
     hand.trackingConfidence = confidence;
 }
 
+void HandTrackingQnn::resetHand(bool isLeft) {
+    HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+    hand.isTracked = false;
+    hand.trackingConfidence = 0.0f;
+    if (isLeft) leftPinching_ = false;
+    else rightPinching_ = false;
+}
+
+bool HandTrackingQnn::getThumbAndIndexPositions(
+    bool isLeft,
+    float& thumbX, float& thumbY, float& thumbZ,
+    float& indexX, float& indexY, float& indexZ
+) const {
+    const HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+    if (!hand.isTracked) return false;
+
+    const auto& thumb = hand.joints[THUMB_TIP];
+    const auto& index = hand.joints[INDEX_FINGER_TIP];
+
+    thumbX = thumb.x;
+    thumbY = thumb.y;
+    thumbZ = thumb.z;
+
+    indexX = index.x;
+    indexY = index.y;
+    indexZ = index.z;
+
+    return true;
+}
+
 bool HandTrackingQnn::processCameraFrame(int width, int height, const uint8_t* yPlane, const uint8_t* uvPlane) {
     if (!yPlane || width <= 0 || height <= 0) return false;
 
