@@ -47,6 +47,10 @@ object NativeBridge {
         initRightPos: FloatArray,
         outTransform: FloatArray
     ): Boolean
+    external fun nativeComputeStereoDepth(
+        normWristX: Float, normWristY: Float,
+        normMcpX: Float, normMcpY: Float
+    ): Float
 
     // Phase 8: Asynchronous TimeWarp
     external fun nativeStartAtwThread(): Boolean

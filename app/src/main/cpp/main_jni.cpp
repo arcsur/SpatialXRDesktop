@@ -416,6 +416,116 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeGetTwoHandTransform(
     return JNI_TRUE;
 }
 
+JNIEXPORT jfloat JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeComputeStereoDepth(
+    JNIEnv* /*env*/, jobject /*thiz*/,
+    jfloat normWristX, jfloat normWristY,
+    jfloat normMcpX, jfloat normMcpY
+) {
+    std::lock_guard<std::mutex> lk(gCarinaFrame.mtx);
+    if (gCarinaFrame.left.empty() || gCarinaFrame.right.empty() ||
+        gCarinaFrame.width <= 0 || gCarinaFrame.height <= 0) {
+        return 0.0f;
+    }
+
+    int width = gCarinaFrame.width;
+    int height = gCarinaFrame.height;
+    const uint8_t* leftImg = gCarinaFrame.left.data();
+    const uint8_t* rightImg = gCarinaFrame.right.data();
+
+    auto matchFeature = [&](float nx, float ny) -> float {
+        int lx = static_cast<int>(nx * width);
+        int ly = static_cast<int>(ny * height);
+
+        const int patchRadius = 5; // 11x11 patch
+        if (lx - patchRadius < 0 || lx + patchRadius >= width ||
+            ly - patchRadius - 2 < 0 || ly + patchRadius + 2 >= height) {
+            return -1.0f;
+        }
+
+        // Search disparity window for hands in front of glasses (0.22m to 1.30m)
+        // d ~ 16 to 110 pixels
+        int minDisp = 16;
+        int maxDisp = std::min(115, lx - patchRadius);
+        if (minDisp >= maxDisp) return -1.0f;
+
+        int bestDisp = -1;
+        uint32_t minSad = UINT32_MAX;
+
+        for (int d = minDisp; d <= maxDisp; ++d) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                uint32_t sad = 0;
+                for (int v = -patchRadius; v <= patchRadius; ++v) {
+                    int leftRow = (ly + v) * width;
+                    int rightRow = (ly + dy + v) * width;
+                    for (int u = -patchRadius; u <= patchRadius; ++u) {
+                        uint8_t lVal = leftImg[leftRow + (lx + u)];
+                        uint8_t rVal = rightImg[rightRow + (lx - d + u)];
+                        sad += std::abs(static_cast<int>(lVal) - static_cast<int>(rVal));
+                    }
+                }
+                if (sad < minSad) {
+                    minSad = sad;
+                    bestDisp = d;
+                }
+            }
+        }
+
+        if (bestDisp <= 0) return -1.0f;
+
+        // Sub-pixel parabolic refinement
+        float subDisp = static_cast<float>(bestDisp);
+        if (bestDisp > minDisp && bestDisp < maxDisp) {
+            auto computeSAD = [&](int d) -> uint32_t {
+                uint32_t sad = 0;
+                for (int v = -patchRadius; v <= patchRadius; ++v) {
+                    int leftRow = (ly + v) * width;
+                    int rightRow = (ly + v) * width;
+                    for (int u = -patchRadius; u <= patchRadius; ++u) {
+                        sad += std::abs(static_cast<int>(leftImg[leftRow + lx + u]) -
+                                        static_cast<int>(rightImg[rightRow + lx - d + u]));
+                    }
+                }
+                return sad;
+            };
+            uint32_t s0 = computeSAD(bestDisp - 1);
+            uint32_t s1 = minSad;
+            uint32_t s2 = computeSAD(bestDisp + 1);
+            float denom = 2.0f * (static_cast<float>(s0) - 2.0f * s1 + s2);
+            if (std::abs(denom) > 1e-4f) {
+                float delta = (static_cast<float>(s0) - s2) / denom;
+                if (std::abs(delta) < 1.0f) {
+                    subDisp += delta;
+                }
+            }
+        }
+
+        return subDisp;
+    };
+
+    float d1 = matchFeature(normWristX, normWristY);
+    float d2 = matchFeature(normMcpX, normMcpY);
+
+    float validDisp = 0.0f;
+    int count = 0;
+    if (d1 > 12.0f) { validDisp += d1; count++; }
+    if (d2 > 12.0f) { validDisp += d2; count++; }
+
+    if (count == 0) return 0.0f;
+    float avgDisp = validDisp / count;
+
+    // Stereoscopic baseline triangulation:
+    // Z = -(f_px * B) / disparity
+    // Baseline B = 0.064m, Focal length f_px = 368px => f*B = 23.552
+    const float FB_CONSTANT = 23.552f;
+    float depth = -FB_CONSTANT / avgDisp;
+
+    if (depth < -1.30f) depth = -1.30f;
+    if (depth > -0.22f) depth = -0.22f;
+
+    return depth;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeStartAtwThread(JNIEnv* /*env*/, jobject /*thiz*/) {
     return JNI_TRUE;

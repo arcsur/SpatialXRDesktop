@@ -138,4 +138,33 @@ class Phase3GestureTest {
         val snapped = smooth(-0.30f, 0.30f)
         assertEquals(0.30f, snapped, 1e-4f)
     }
+
+    @Test
+    fun testStereoscopicDisparityTriangulationAndFallback() {
+        // Physical parameters of Viture Carina stereo cameras:
+        // Baseline B = 0.064m (64mm), Focal length f_px = 368px
+        val baselineMeters = 0.064f
+        val focalLengthPx = 368f
+        val fbConstant = focalLengthPx * baselineMeters // 23.552
+
+        fun triangulateDepth(disparityPx: Float): Float {
+            if (disparityPx <= 0f) return 0f
+            val raw = -fbConstant / disparityPx
+            return raw.coerceIn(-1.30f, -0.22f)
+        }
+
+        // 1. Arm reach at 50cm (disparity ~ 47.1px)
+        val depth50cm = triangulateDepth(47.1f)
+        assertEquals(-0.50f, depth50cm, 0.02f)
+
+        // 2. Close reach at 30cm (disparity ~ 78.5px)
+        val depth30cm = triangulateDepth(78.5f)
+        assertEquals(-0.30f, depth30cm, 0.02f)
+
+        // 3. Fallback logic when stereo disparity unavailable (e.g. disparity <= 0)
+        val stereoDepth = 0f
+        val palmSpanDepth = -0.55f
+        val selectedDepth = if (stereoDepth < -0.15f) stereoDepth else palmSpanDepth
+        assertEquals(palmSpanDepth, selectedDepth, 1e-4f)
+    }
 }

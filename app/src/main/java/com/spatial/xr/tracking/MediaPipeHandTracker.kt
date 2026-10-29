@@ -359,13 +359,25 @@ class MediaPipeHandTracker(private val context: Context) {
         }
         if (isLeft) leftSmoothedSpan = filteredSpan else rightSmoothedSpan = filteredSpan
 
-        // Pinhole camera depth: smaller palm span in image -> deeper in front of camera
+        // Dynamic optical depth estimation
+        // 1. Primary: Binocular stereoscopic disparity triangulation from dual physical camera feeds
+        val stereoDepth = if (NativeBridge.isNativeLoaded()) {
+            NativeBridge.nativeComputeStereoDepth(normX, normY, middleMcp.x(), middleMcp.y())
+        } else {
+            0.0f
+        }
+
+        // 2. Fallback: Monocular palm span pinhole depth model
         val rawDepth = -(0.0825f / filteredSpan).coerceIn(-1.30f, -0.25f)
+
+        // Select stereoscopic depth if valid (< -0.15m), otherwise fall back to monocular palm span
+        val measuredDepth = if (stereoDepth < -0.15f) stereoDepth else rawDepth
+
         val prevDepth = if (isLeft) leftSmoothedDepth else rightSmoothedDepth
-        val depthDiff = Math.abs(rawDepth - prevDepth)
+        val depthDiff = Math.abs(measuredDepth - prevDepth)
         // Deadband: small depth fluctuations (< 1.5 cm) are suppressed to eliminate depth chatter
-        val targetDepth = if (depthDiff < 0.015f) prevDepth else rawDepth
-        val smoothedDepth = prevDepth * 0.75f + targetDepth * 0.25f
+        val targetDepth = if (depthDiff < 0.015f) prevDepth else measuredDepth
+        val smoothedDepth = prevDepth * 0.70f + targetDepth * 0.30f
         if (isLeft) leftSmoothedDepth = smoothedDepth else rightSmoothedDepth = smoothedDepth
         val baseZ = smoothedDepth
 
