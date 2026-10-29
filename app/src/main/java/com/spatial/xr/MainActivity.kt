@@ -16,9 +16,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -30,6 +32,7 @@ import androidx.core.content.ContextCompat
 import com.spatial.xr.ai.GeminiSpatialAgent
 import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.display.ExternalDisplayManager
+import com.spatial.xr.display.PocketModeManager
 import com.spatial.xr.display.PresentationManager
 import com.spatial.xr.hardware.VitureCameraStreamer
 import com.spatial.xr.tutorial.TutorialManager
@@ -59,10 +62,12 @@ class MainActivity : AppCompatActivity(),
     private lateinit var spatialWindowManager: SpatialWindowManager
     private lateinit var appLauncherRepository: AppLauncherRepository
     private lateinit var vitureCameraStreamer: VitureCameraStreamer
+    private lateinit var pocketModeManager: PocketModeManager
 
     private var statusTextView: TextView? = null
     private var dockButton: Button? = null
     private var stereoButton: Button? = null
+    private var pocketModeButton: Button? = null
 
     // Touchpad tracking variables
     private var initialPinchDist = 0f
@@ -108,6 +113,8 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         presentationManager = PresentationManager(
             this,
             callback = this,
@@ -115,6 +122,19 @@ class MainActivity : AppCompatActivity(),
             launcherRepository = appLauncherRepository
         )
         externalDisplayManager = ExternalDisplayManager(this, displayManager, usbManager, this)
+        pocketModeManager = PocketModeManager(this, object : PocketModeManager.PocketModeListener {
+            override fun onPocketModeChanged(isActive: Boolean) {
+                runOnUiThread {
+                    if (isActive) {
+                        presentationManager.getRenderer()?.setPointer(0f, 0f, active = false, pinching = false)
+                        initialPinchDist = 0f
+                        if (statusTextView?.text?.contains("🌙") != true) {
+                            statusTextView?.append("\n🌙 Pocket Mode Active (Screen Off & Touches Locked)")
+                        }
+                    }
+                }
+            }
+        })
 
         // UI Setup: Spatial Controller Deck
         setupControllerDeckUi()
@@ -226,6 +246,31 @@ class MainActivity : AppCompatActivity(),
         }
         secondaryButtonRow.addView(tutorialButton)
         rootLayout.addView(secondaryButtonRow)
+
+        // Utility Controls: Pocket Mode / Screen Off
+        val utilityButtonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, 24)
+        }
+
+        pocketModeButton = Button(this).apply {
+            text = "🌙 Turn Off Screen (Pocket Mode)"
+            setTextColor(Color.parseColor("#00E5FF"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#151A30"))
+                cornerRadius = 16f
+                setStroke(2, Color.parseColor("#4000E5FF"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnClickListener {
+                pocketModeManager.enterPocketMode()
+            }
+        }
+        utilityButtonRow.addView(pocketModeButton)
+        rootLayout.addView(utilityButtonRow)
 
         // Spatial Touchpad / Laser Pointer Area
         val touchpadLabel = TextView(this).apply {
@@ -400,6 +445,9 @@ class MainActivity : AppCompatActivity(),
     override fun onResume() {
         super.onResume()
         externalDisplayManager.startListening()
+        if (::pocketModeManager.isInitialized) {
+            pocketModeManager.startListening()
+        }
     }
 
     override fun onPause() {
@@ -409,10 +457,27 @@ class MainActivity : AppCompatActivity(),
 
     override fun onDestroy() {
         super.onDestroy()
+        if (::pocketModeManager.isInitialized) {
+            pocketModeManager.stopListening()
+        }
         vitureCameraStreamer.stopStreaming()
         presentationManager.detachDisplay()
         externalDisplayManager.stopListening()
         NativeBridge.nativeShutdownCompositor()
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev != null && ::pocketModeManager.isInitialized && pocketModeManager.onDispatchTouchEvent(ev)) {
+            return true
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (::pocketModeManager.isInitialized && pocketModeManager.onKeyDown(keyCode, event)) {
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     // ExternalDisplayManager.ExternalDisplayListener
