@@ -9,10 +9,14 @@ import android.view.SurfaceView
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
+import com.spatial.xr.window.AppLauncherRepository
+import com.spatial.xr.window.SpatialWindowManager
 
 class PresentationManager(
     private val context: Context,
-    private val callback: PresentationSurfaceCallback
+    private val callback: PresentationSurfaceCallback? = null,
+    private val windowManager: SpatialWindowManager? = null,
+    private val launcherRepository: AppLauncherRepository? = null
 ) {
 
     interface PresentationSurfaceCallback {
@@ -26,7 +30,7 @@ class PresentationManager(
 
     fun attachDisplay(display: Display) {
         detachDisplay()
-        presentation = SpatialPresentation(context, display, callback).apply {
+        presentation = SpatialPresentation(context, display, callback, windowManager, launcherRepository).apply {
             show()
         }
     }
@@ -38,13 +42,18 @@ class PresentationManager(
 
     fun isAttached(): Boolean = presentation?.isShowing == true
 
+    fun getRenderer(): SpatialStereoRenderer? = presentation?.renderer
+
     private class SpatialPresentation(
         context: Context,
         display: Display,
-        private val callback: PresentationSurfaceCallback
+        private val callback: PresentationSurfaceCallback?,
+        private val windowManager: SpatialWindowManager?,
+        private val launcherRepository: AppLauncherRepository?
     ) : Presentation(context, display), SurfaceHolder.Callback {
 
         private lateinit var surfaceView: SurfaceView
+        var renderer: SpatialStereoRenderer? = null
 
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
@@ -64,20 +73,30 @@ class PresentationManager(
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
-            callback.onSurfaceCreated(holder)
+            callback?.onSurfaceCreated(holder)
+            if (windowManager != null && launcherRepository != null) {
+                renderer?.stopRendering()
+                renderer = SpatialStereoRenderer(context, holder, windowManager, launcherRepository).apply {
+                    start()
+                }
+            }
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-            callback.onSurfaceChanged(holder, format, width, height)
+            callback?.onSurfaceChanged(holder, format, width, height)
         }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
-            callback.onSurfaceDestroyed(holder)
+            renderer?.stopRendering()
+            renderer = null
+            callback?.onSurfaceDestroyed(holder)
         }
 
         override fun onStop() {
             super.onStop()
-            callback.onDismissed()
+            renderer?.stopRendering()
+            renderer = null
+            callback?.onDismissed()
         }
     }
 }

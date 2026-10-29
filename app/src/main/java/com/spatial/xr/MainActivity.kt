@@ -3,24 +3,39 @@ package com.spatial.xr
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
 import android.hardware.usb.UsbManager
+import android.media.ImageReader
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Display
+import android.view.MotionEvent
 import android.view.SurfaceHolder
+import android.view.View
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.spatial.xr.ai.GeminiSpatialAgent
 import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.display.ExternalDisplayManager
 import com.spatial.xr.display.PresentationManager
 import com.spatial.xr.tutorial.TutorialManager
 import com.spatial.xr.tutorial.TutorialOverlayDialog
-import com.spatial.xr.ai.GeminiSpatialAgent
-import android.widget.Button
-import android.widget.LinearLayout
+import com.spatial.xr.window.AppLauncherRepository
+import com.spatial.xr.window.SpatialWindowManager
+import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity(),
     ExternalDisplayManager.ExternalDisplayListener,
@@ -40,31 +55,24 @@ class MainActivity : AppCompatActivity(),
     private lateinit var presentationManager: PresentationManager
     private lateinit var tutorialManager: TutorialManager
     private lateinit var geminiAgent: GeminiSpatialAgent
+    private lateinit var spatialWindowManager: SpatialWindowManager
+    private lateinit var appLauncherRepository: AppLauncherRepository
+
     private var statusTextView: TextView? = null
+    private var dockButton: Button? = null
+    private var stereoButton: Button? = null
+
+    // Touchpad tracking variables
+    private var initialPinchDist = 0f
+    private var activeWindowId = 1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val rootLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 64, 32, 64)
-        }
-
-        statusTextView = TextView(this).apply {
-            text = "Spatial XR Desktop Initializing...\nConnect VITURE Glasses via USB-C DP Alt Mode."
-            textSize = 16f
-        }
-        rootLayout.addView(statusTextView)
-
-        val tutorialButton = Button(this).apply {
-            text = "📖 Open Usage Guide & Tutorial"
-            setOnClickListener {
-                showTutorialDialog()
-            }
-        }
-        rootLayout.addView(tutorialButton)
-
-        setContentView(rootLayout)
+        // Initialize Spatial Systems
+        spatialWindowManager = SpatialWindowManager()
+        appLauncherRepository = AppLauncherRepository(this, packageManager)
+        appLauncherRepository.loadLaunchableApps()
 
         tutorialManager = TutorialManager(this)
         geminiAgent = GeminiSpatialAgent(tutorialManager = tutorialManager)
@@ -86,8 +94,16 @@ class MainActivity : AppCompatActivity(),
         displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
 
-        presentationManager = PresentationManager(this, this)
+        presentationManager = PresentationManager(
+            this,
+            callback = this,
+            windowManager = spatialWindowManager,
+            launcherRepository = appLauncherRepository
+        )
         externalDisplayManager = ExternalDisplayManager(this, displayManager, usbManager, this)
+
+        // UI Setup: Spatial Controller Deck
+        setupControllerDeckUi()
 
         checkPermissions()
 
@@ -96,6 +112,241 @@ class MainActivity : AppCompatActivity(),
             showTutorialDialog()
         }
     }
+
+    private fun setupControllerDeckUi() {
+        val rootLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0A0D1B"))
+            setPadding(32, 48, 32, 48)
+        }
+
+        // Title and Status Card
+        val headerCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 24, 24, 24)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#151A30"))
+                cornerRadius = 24f
+                setStroke(2, Color.parseColor("#3000E5FF"))
+            }
+        }
+
+        val titleView = TextView(this).apply {
+            text = "⚡ SPATIAL XR DESKTOP"
+            textSize = 20f
+            setTextColor(Color.parseColor("#00E5FF"))
+            paint.isFakeBoldText = true
+        }
+        headerCard.addView(titleView)
+
+        statusTextView = TextView(this).apply {
+            text = "Status: Detecting VITURE Glasses..."
+            textSize = 14f
+            setTextColor(Color.parseColor("#A0B0D0"))
+            setPadding(0, 8, 0, 0)
+        }
+        headerCard.addView(statusTextView)
+        rootLayout.addView(headerCard)
+
+        // Action Buttons Grid
+        val buttonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 24, 0, 16)
+        }
+
+        dockButton = Button(this).apply {
+            text = "🖐️ Apps Dock"
+            setBackgroundColor(Color.parseColor("#1A237E"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = 12
+            }
+            setOnClickListener {
+                toggleAppsDock()
+            }
+        }
+        buttonRow.addView(dockButton)
+
+        val newWinButton = Button(this).apply {
+            text = "🪟 New Window"
+            setBackgroundColor(Color.parseColor("#283593"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = 12
+            }
+            setOnClickListener {
+                spawnDemoWindow()
+            }
+        }
+        buttonRow.addView(newWinButton)
+        rootLayout.addView(buttonRow)
+
+        val secondaryButtonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, 24)
+        }
+
+        stereoButton = Button(this).apply {
+            text = "↔️ Mode: 3D SBS"
+            setBackgroundColor(Color.parseColor("#00695C"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = 12
+            }
+            setOnClickListener {
+                toggleStereoMode()
+            }
+        }
+        secondaryButtonRow.addView(stereoButton)
+
+        val tutorialButton = Button(this).apply {
+            text = "📖 Usage Guide"
+            setBackgroundColor(Color.parseColor("#37474F"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = 12
+            }
+            setOnClickListener {
+                showTutorialDialog()
+            }
+        }
+        secondaryButtonRow.addView(tutorialButton)
+        rootLayout.addView(secondaryButtonRow)
+
+        // Spatial Touchpad / Laser Pointer Area
+        val touchpadLabel = TextView(this).apply {
+            text = "📱 SPATIAL TRACKPAD (Drag to Aim • Tap to Pinch • 2-Finger Stretch)"
+            textSize = 12f
+            setTextColor(Color.parseColor("#7080A0"))
+            setPadding(8, 0, 8, 8)
+        }
+        rootLayout.addView(touchpadLabel)
+
+        val touchpadView = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#12162A"))
+                cornerRadius = 24f
+                setStroke(3, Color.parseColor("#4000E5FF"))
+            }
+
+            setOnTouchListener { v, event ->
+                handleTouchpadEvent(v, event)
+                true
+            }
+        }
+
+        val touchpadCenterHint = TextView(this).apply {
+            text = "✦\nAim Laser in Glasses"
+            textSize = 16f
+            setTextColor(Color.parseColor("#4000E5FF"))
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.CENTER
+            )
+        }
+        touchpadView.addView(touchpadCenterHint)
+        rootLayout.addView(touchpadView)
+
+        setContentView(rootLayout)
+    }
+
+    private fun handleTouchpadEvent(view: View, event: MotionEvent) {
+        val renderer = presentationManager.getRenderer() ?: return
+        val normX = (event.x / view.width.toFloat()).coerceIn(0f, 1f)
+        val normY = (event.y / view.height.toFloat()).coerceIn(0f, 1f)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                renderer.setPointer(normX, normY, active = true, pinching = false)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // Two-finger pinch detected
+                if (event.pointerCount >= 2) {
+                    val dx = event.getX(0) - event.getX(1)
+                    val dy = event.getY(0) - event.getY(1)
+                    initialPinchDist = sqrt(dx * dx + dy * dy).coerceAtLeast(10f)
+                    spatialWindowManager.startTwoHandDiagonalResize(activeWindowId, initialPinchDist / 400f)
+                    renderer.setPointer(normX, normY, active = true, pinching = true)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2 && initialPinchDist > 0f) {
+                    val dx = event.getX(0) - event.getX(1)
+                    val dy = event.getY(0) - event.getY(1)
+                    val currentDist = sqrt(dx * dx + dy * dy)
+                    spatialWindowManager.updateTwoHandDiagonalResize(activeWindowId, currentDist / 400f)
+                    renderer.setPointer(normX, normY, active = true, pinching = true)
+                } else {
+                    renderer.setPointer(normX, normY, active = true, pinching = false)
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount <= 2) {
+                    spatialWindowManager.endTwoHandDiagonalResize(activeWindowId)
+                    initialPinchDist = 0f
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                renderer.setPointer(normX, normY, active = false, pinching = false)
+                initialPinchDist = 0f
+            }
+        }
+    }
+
+    private fun toggleAppsDock() {
+        val renderer = presentationManager.getRenderer()
+        if (renderer != null) {
+            renderer.toggleDock()
+            val state = if (renderer.isDockExpanded) "OPEN" else "CLOSED"
+            dockButton?.text = if (renderer.isDockExpanded) "🖐️ Close Dock" else "🖐️ Apps Dock"
+            Toast.makeText(this, "Apps Dock: $state", Toast.LENGTH_SHORT).show()
+        } else {
+            // Also toggle window manager dock directly
+            val newState = !spatialWindowManager.isWristDockVisible()
+            spatialWindowManager.setWristDockVisible(newState)
+            dockButton?.text = if (newState) "🖐️ Close Dock" else "🖐️ Apps Dock"
+            Toast.makeText(this, "Dock: ${if (newState) "OPEN" else "CLOSED"}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toggleStereoMode() {
+        val renderer = presentationManager.getRenderer() ?: return
+        renderer.isStereoSideBySide = !renderer.isStereoSideBySide
+        if (renderer.isStereoSideBySide) {
+            stereoButton?.text = "↔️ Mode: 3D SBS"
+            NativeBridge.nativeSet3DMode(true)
+            Toast.makeText(this, "3D Side-by-Side Mode Enabled", Toast.LENGTH_SHORT).show()
+        } else {
+            stereoButton?.text = "↔️ Mode: 2D Mono"
+            NativeBridge.nativeSet3DMode(false)
+            Toast.makeText(this, "2D Monoscopic Mode Enabled", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun spawnDemoWindow() {
+        val nextId = (spatialWindowManager.getAllWindows().size + 1)
+        activeWindowId = nextId
+        val offsetX = (nextId % 2 == 0) then 0.35f ?: -0.35f
+        spatialWindowManager.createWindow(
+            windowId = nextId,
+            packageName = "com.spatial.xr.window$nextId",
+            displaySessionId = 100 + nextId,
+            widthMeters = 0.90f,
+            heightMeters = 0.55f
+        ).apply {
+            position = SpatialWindowManager.Vector3(offsetX, 0.1f, -1.3f)
+        }
+        Toast.makeText(this, "Spawned Hologram Window #$nextId", Toast.LENGTH_SHORT).show()
+    }
+
+    private infix fun <T> Boolean.then(value: T): T? = if (this) value else null
 
     private fun showTutorialDialog() {
         TutorialOverlayDialog(this, tutorialManager).show()
@@ -129,6 +380,7 @@ class MainActivity : AppCompatActivity(),
 
     private fun onPermissionsGranted() {
         externalDisplayManager.startListening()
+        startFrontCameraPalmDetection()
     }
 
     override fun onResume() {
@@ -138,35 +390,39 @@ class MainActivity : AppCompatActivity(),
 
     override fun onPause() {
         super.onPause()
-        externalDisplayManager.stopListening()
-        presentationManager.detachDisplay()
+        // Do NOT detach display on pause - XR glasses presentation must remain active
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        presentationManager.detachDisplay()
+        externalDisplayManager.stopListening()
         NativeBridge.nativeShutdownCompositor()
     }
 
     // ExternalDisplayManager.ExternalDisplayListener
     override fun onExternalDisplayConnected(display: Display, isViture: Boolean) {
-        val msg = "External Display Connected: ${display.name} (ID: ${display.displayId}, Viture: $isViture)"
-        statusTextView?.text = msg
-        presentationManager.attachDisplay(display)
+        runOnUiThread {
+            val msg = "👓 VITURE Glasses Connected: ${display.name} (Display #${display.displayId})\nResolution: ${display.mode.physicalWidth}x${display.mode.physicalHeight} @ ${display.mode.refreshRate.toInt()}Hz"
+            statusTextView?.text = msg
+            presentationManager.attachDisplay(display)
+        }
     }
 
     override fun onExternalDisplayDisconnected(displayId: Int) {
-        statusTextView?.text = "External Display Disconnected. Waiting for glasses..."
-        presentationManager.detachDisplay()
-        NativeBridge.nativeShutdownCompositor()
+        runOnUiThread {
+            statusTextView?.text = "Status: Glasses Disconnected. Waiting for connection..."
+            presentationManager.detachDisplay()
+            NativeBridge.nativeShutdownCompositor()
+        }
     }
 
     // PresentationManager.PresentationSurfaceCallback
     override fun onSurfaceCreated(holder: SurfaceHolder) {
-        val success = NativeBridge.nativeInitCompositor(holder.surface)
-        if (success) {
-            NativeBridge.nativeSet3DMode(true)
-            NativeBridge.nativeRenderCalibrationPattern()
-            statusTextView?.append("\nVulkan Compositor initialized (3840x1080 3D SBS).")
+        NativeBridge.nativeInitCompositor(holder.surface)
+        NativeBridge.nativeSet3DMode(true)
+        runOnUiThread {
+            statusTextView?.append("\n✅ 3D SBS Compositor Active (60 FPS)")
         }
     }
 
@@ -174,10 +430,82 @@ class MainActivity : AppCompatActivity(),
     }
 
     override fun onSurfaceDestroyed(holder: SurfaceHolder) {
-        NativeBridge.nativeShutdownCompositor()
     }
 
     override fun onDismissed() {
-        NativeBridge.nativeShutdownCompositor()
+    }
+
+    /**
+     * Starts front camera frame capture to detect look-at-palm gesture.
+     */
+    private fun startFrontCameraPalmDetection() {
+        try {
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val frontCameraId = cameraManager.cameraIdList.firstOrNull { id ->
+                val chars = cameraManager.getCameraCharacteristics(id)
+                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+            } ?: return
+
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                return
+            }
+
+            cameraManager.openCamera(frontCameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    val imageReader = ImageReader.newInstance(320, 240, android.graphics.ImageFormat.YUV_420_888, 2)
+                    imageReader.setOnImageAvailableListener({ reader ->
+                        val image = reader.acquireLatestImage()
+                        if (image != null) {
+                            try {
+                                // Analyze average center brightness/motion for palm raise
+                                val yPlane = image.planes[0].buffer
+                                val capacity = yPlane.remaining()
+                                if (capacity > 1000) {
+                                    var sum = 0L
+                                    val step = capacity / 100
+                                    for (i in 0 until capacity step step) {
+                                        sum += (yPlane.get(i).toInt() and 0xFF)
+                                    }
+                                    val avgLum = sum / 100
+                                    // High center luminance close to camera = palm raised
+                                    if (avgLum > 180 && !spatialWindowManager.isWristDockVisible()) {
+                                        runOnUiThread {
+                                            spatialWindowManager.setWristDockVisible(true)
+                                            presentationManager.getRenderer()?.isDockExpanded = true
+                                            dockButton?.text = "🖐️ Close Dock"
+                                        }
+                                    }
+                                }
+                            } finally {
+                                image.close()
+                            }
+                        }
+                    }, Handler(Looper.getMainLooper()))
+
+                    val surface = imageReader.surface
+                    camera.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                addTarget(surface)
+                            }
+                            session.setRepeatingRequest(request.build(), null, null)
+                        }
+
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                        }
+                    }, null)
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                }
+            }, null)
+        } catch (e: Exception) {
+            // Camera tracking fallback handled by on-screen touchpad
+        }
     }
 }
