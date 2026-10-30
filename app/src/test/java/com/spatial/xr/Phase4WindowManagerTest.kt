@@ -117,10 +117,12 @@ class Phase4WindowManagerTest {
     }
 
     @Test
-    fun testIronManSimultaneousResizeRepositionAndHorizontalAngling() {
+    fun testDiagonalCornerPinchExclusivelyResizesWithoutRotationOrTilt() {
         val wm = SpatialWindowManager()
-        val win = wm.createWindow(1, "com.example.ironman", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        val win = wm.createWindow(1, "com.example.cornerresize", 101, widthMeters = 1.0f, heightMeters = 0.6f)
         win.position = Vector3(0f, 0f, -1.2f)
+        val initialOrientation = win.orientation
+        val initialPos = win.position
 
         // Hand 1 at top-left (-0.5, 0.3, -1.2), Hand 2 at bottom-right (0.5, -0.3, -1.2)
         val h1Start = Vector3(-0.5f, 0.3f, -1.2f)
@@ -129,37 +131,142 @@ class Phase4WindowManagerTest {
         val started = wm.startTwoHandDiagonalTransform(1, h1Start, h2Start)
         assertTrue(started)
 
-        // Simultaneous manipulation:
-        // 1. Move midpoint by (+0.2, +0.1, -0.5) -> new center at (0.2, 0.1, -1.7)
-        // 2. Stretch diagonal distance
-        // 3. Push right hand deeper in Z, pull left hand closer -> horizontal angle tilt
-        val h1Curr = Vector3(-0.55f, 0.55f, -1.3f)
-        val h2Curr = Vector3(0.95f, -0.35f, -2.1f)
+        // Diagonal stretch: hands stretched apart and shifted in space
+        val h1Curr = Vector3(-0.75f, 0.45f, -1.4f)
+        val h2Curr = Vector3(0.75f, -0.45f, -1.0f)
 
         val updated = wm.updateTwoHandDiagonalTransform(1, h1Curr, h2Curr)
         assertTrue(updated)
 
-        // 1. Verify 3D repositioning
-        assertEquals(0.2f, win.position.x, 1e-4f)
-        assertEquals(0.1f, win.position.y, 1e-4f)
-        assertEquals(-1.7f, win.position.z, 1e-4f)
+        // 1. Resizing must occur (stretched distance increases width & height)
+        assertTrue("Width must be resized larger", win.widthMeters > 1.3f)
+        assertTrue("Height must be resized larger", win.heightMeters > 0.8f)
 
-        // 2. Verify resizing (distance stretched)
-        assertTrue(win.widthMeters > 1.3f)
-        assertTrue(win.heightMeters > 0.8f)
+        // 2. Window orientation must be strictly locked (NO rotation or tilt)
+        assertEquals(initialOrientation.w, win.orientation.w, 1e-4f)
+        assertEquals(initialOrientation.x, win.orientation.x, 1e-4f)
+        assertEquals(initialOrientation.y, win.orientation.y, 1e-4f)
+        assertEquals(initialOrientation.z, win.orientation.z, 1e-4f)
 
-        // 3. Verify horizontal angling (yaw rotation)
-        // Right vector (1, 0, 0) rotated by window orientation:
-        val rotatedRight = wm.rotateVector(Vector3(1f, 0f, 0f), win.orientation)
-        // Right side should be angled deeper in Z (negative Z)
-        assertTrue(rotatedRight.z < -0.1f)
-
-        // Left vector (-1, 0, 0) rotated by window orientation:
-        val rotatedLeft = wm.rotateVector(Vector3(-1f, 0f, 0f), win.orientation)
-        // Left side should be angled closer to user (positive Z)
-        assertTrue(rotatedLeft.z > 0.1f)
+        // 3. Window position must remain anchored (NO translation drift)
+        assertEquals(initialPos.x, win.position.x, 1e-4f)
+        assertEquals(initialPos.y, win.position.y, 1e-4f)
+        assertEquals(initialPos.z, win.position.z, 1e-4f)
 
         wm.endTwoHandDiagonalTransform(1)
+    }
+
+    @Test
+    fun testSideEdgePinchHorizontalRotationAndZProjection() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.edgerotate", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        // Pinch grabbing left and right edges at center height (y = 0)
+        val h1Start = Vector3(-0.5f, 0f, -1.2f)
+        val h2Start = Vector3(0.5f, 0f, -1.2f)
+
+        val gestureType = wm.startTwoHandGesture(1, h1Start, h2Start)
+        assertEquals(SpatialWindowManager.TwoHandGestureType.HORIZONTAL_ROTATION, gestureType)
+
+        // Push right hand deeper in Z (-1.6m), keep left hand at -1.2m
+        val h1Curr = Vector3(-0.5f, 0f, -1.2f)
+        val h2Curr = Vector3(0.5f, 0f, -1.6f)
+
+        val updated = wm.updateTwoHandGesture(1, h1Curr, h2Curr)
+        assertTrue(updated)
+
+        // 1. Horizontal rotation (yaw): right side angled deeper in Z, left side closer
+        val rotatedRight = wm.rotateVector(Vector3(1f, 0f, 0f), win.orientation)
+        assertTrue("Right edge must angle deeper in Z", rotatedRight.z < -0.1f)
+
+        val rotatedLeft = wm.rotateVector(Vector3(-1f, 0f, 0f), win.orientation)
+        assertTrue("Left edge must angle closer in Z", rotatedLeft.z > 0.1f)
+
+        // 2. Metric Z positioning: window center depth matches midpoint of hands (-1.4m)
+        assertEquals(-1.4f, win.position.z, 1e-4f)
+
+        // 3. Max rotation clamp: extreme depth difference should be clamped to ±60 degrees (π/3 rad)
+        val h2Extreme = Vector3(0.5f, 0f, -3.0f)
+        wm.updateTwoHandGesture(1, h1Curr, h2Extreme)
+
+        val rightExtreme = wm.rotateVector(Vector3(1f, 0f, 0f), win.orientation)
+        val maxExpectedSin = kotlin.math.sin(Math.PI / 3.0).toFloat() // sin(60 deg) ~ 0.866
+        assertEquals(-maxExpectedSin, rightExtreme.z, 0.05f)
+
+        wm.endTwoHandGesture(1)
+    }
+
+    @Test
+    fun testSideEdgePinchVerticalTiltAndZProjection() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.edgetilt", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        // Pinch grabbing top and bottom edges at center width (x = 0)
+        val h1Start = Vector3(0f, 0.3f, -1.2f)
+        val h2Start = Vector3(0f, -0.3f, -1.2f)
+
+        val gestureType = wm.startTwoHandGesture(1, h1Start, h2Start)
+        assertEquals(SpatialWindowManager.TwoHandGestureType.VERTICAL_TILT, gestureType)
+
+        // Push top hand deeper in Z (-1.6m), keep bottom hand at -1.2m
+        val h1Curr = Vector3(0f, 0.3f, -1.6f)
+        val h2Curr = Vector3(0f, -0.3f, -1.2f)
+
+        val updated = wm.updateTwoHandGesture(1, h1Curr, h2Curr)
+        assertTrue(updated)
+
+        // 1. Vertical tilt (pitch): top side angled deeper in Z, bottom side closer
+        val rotatedTop = wm.rotateVector(Vector3(0f, 1f, 0f), win.orientation)
+        assertTrue("Top edge must angle deeper in Z", rotatedTop.z < -0.1f)
+
+        val rotatedBottom = wm.rotateVector(Vector3(0f, -1f, 0f), win.orientation)
+        assertTrue("Bottom edge must angle closer in Z", rotatedBottom.z > 0.1f)
+
+        // 2. Metric Z positioning: window center depth matches midpoint of hands (-1.4m)
+        assertEquals(-1.4f, win.position.z, 1e-4f)
+
+        // 3. Max tilt clamp: extreme depth difference clamped to ±60 degrees
+        val h1Extreme = Vector3(0f, 0.3f, -3.0f)
+        wm.updateTwoHandGesture(1, h1Extreme, h2Curr)
+
+        val topExtreme = wm.rotateVector(Vector3(0f, 1f, 0f), win.orientation)
+        val maxExpectedSin = kotlin.math.sin(Math.PI / 3.0).toFloat()
+        assertEquals(-maxExpectedSin, topExtreme.z, 0.05f)
+
+        wm.endTwoHandGesture(1)
+    }
+
+    @Test
+    fun testTouchpointClassificationCornersVsEdges() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.classify", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+
+        // 1. Opposing corners: Top-Left (-0.5, 0.3) and Bottom-Right (0.5, -0.3)
+        val cornerTL = Vector3(-0.5f, 0.3f, -1.2f)
+        val cornerBR = Vector3(0.5f, -0.3f, -1.2f)
+        assertEquals(
+            SpatialWindowManager.TwoHandGestureType.CORNER_RESIZE,
+            wm.classifyTwoHandTouchpoints(win, cornerTL, cornerBR)
+        )
+
+        // 2. Left and Right side edges (excluding corners): (-0.5, 0.0) and (0.5, 0.0)
+        val edgeLeft = Vector3(-0.5f, 0f, -1.2f)
+        val edgeRight = Vector3(0.5f, 0f, -1.2f)
+        assertEquals(
+            SpatialWindowManager.TwoHandGestureType.HORIZONTAL_ROTATION,
+            wm.classifyTwoHandTouchpoints(win, edgeLeft, edgeRight)
+        )
+
+        // 3. Top and Bottom side edges (excluding corners): (0.0, 0.3) and (0.0, -0.3)
+        val edgeTop = Vector3(0f, 0.3f, -1.2f)
+        val edgeBottom = Vector3(0f, -0.3f, -1.2f)
+        assertEquals(
+            SpatialWindowManager.TwoHandGestureType.VERTICAL_TILT,
+            wm.classifyTwoHandTouchpoints(win, edgeTop, edgeBottom)
+        )
     }
 
     @Test
@@ -334,16 +441,16 @@ class Phase4WindowManagerTest {
         val win = wm.createWindow(1, "com.example.deadband", 101, widthMeters = 1.0f, heightMeters = 0.6f)
         win.position = Vector3(0f, 0f, -1.2f)
 
-        val h1 = Vector3(-0.5f, 0.3f, -1.2f)
-        val h2 = Vector3(0.5f, -0.3f, -1.2f)
-        wm.startTwoHandDiagonalTransform(1, h1, h2)
+        val h1 = Vector3(-0.5f, 0f, -1.2f)
+        val h2 = Vector3(0.5f, 0f, -1.2f)
+        wm.startTwoHandEdgeRotation(1, SpatialWindowManager.TwoHandGestureType.HORIZONTAL_ROTATION, h1, h2)
         val initialOrientation = win.orientation
 
         // Micro-tremor in depth: right hand fluctuates by 8mm (-1.208 vs -1.2)
         // Angle diff: atan2(-0.008, 1.0) = -0.008 rad (~0.45 deg), well below 0.026 rad (1.5 deg) deadband
-        val h1Jitter = Vector3(-0.5f, 0.3f, -1.2f)
-        val h2Jitter = Vector3(0.5f, -0.3f, -1.208f)
-        wm.updateTwoHandDiagonalTransform(1, h1Jitter, h2Jitter)
+        val h1Jitter = Vector3(-0.5f, 0f, -1.2f)
+        val h2Jitter = Vector3(0.5f, 0f, -1.208f)
+        wm.updateTwoHandEdgeRotation(1, h1Jitter, h2Jitter)
 
         // Orientation MUST remain strictly locked (no chatter)
         assertEquals(initialOrientation.w, win.orientation.w, 1e-4f)
@@ -351,13 +458,13 @@ class Phase4WindowManagerTest {
 
         // Deliberate angular tilt: right hand pushed 25cm deeper (-1.45 vs -1.2)
         // Angle diff: atan2(-0.25, 1.0) = -0.245 rad (~14 deg), well above deadband
-        val h2Tilt = Vector3(0.5f, -0.3f, -1.45f)
-        wm.updateTwoHandDiagonalTransform(1, h1, h2Tilt)
+        val h2Tilt = Vector3(0.5f, 0f, -1.45f)
+        wm.updateTwoHandEdgeRotation(1, h1, h2Tilt)
 
         // Orientation MUST update to reflect intentional turn
         assertTrue(kotlin.math.abs(win.orientation.y - initialOrientation.y) > 0.05f)
 
-        wm.endTwoHandDiagonalTransform(1)
+        wm.endTwoHandEdgeRotation(1)
     }
 
     @Test
@@ -389,5 +496,41 @@ class Phase4WindowManagerTest {
         assertTrue(win.widthMeters > 1.2f)
 
         wm.endTwoHandDiagonalTransform(1)
+    }
+
+    @Test
+    fun testWindowGrabRepositionInXYZWithoutRotation() {
+        val wm = SpatialWindowManager()
+        val win = wm.createWindow(1, "com.example.reposition", 101, widthMeters = 1.0f, heightMeters = 0.6f)
+        win.position = Vector3(0f, 0f, -1.2f)
+        val initialOrientation = win.orientation
+
+        val handStart = Vector3(0f, 0f, -0.8f)
+        val started = wm.startWindowGrabReposition(1, handStart)
+        assertTrue(started)
+
+        // Move hand in 3D: dx = +0.3m, dy = -0.2m, dz = -0.5m
+        val handEnd = Vector3(0.3f, -0.2f, -1.3f)
+        val updated = wm.updateWindowGrabReposition(1, handEnd, enablePerspectiveScaling = false)
+        assertTrue(updated)
+
+        // Assert 3D translation: position = (0 + 0.3, 0 - 0.2, -1.2 - 0.5 = -1.7)
+        assertEquals(0.3f, win.position.x, 1e-4f)
+        assertEquals(-0.2f, win.position.y, 1e-4f)
+        assertEquals(-1.7f, win.position.z, 1e-4f)
+
+        // Assert orientation is strictly locked (no rotation)
+        assertEquals(initialOrientation.w, win.orientation.w, 1e-4f)
+        assertEquals(initialOrientation.x, win.orientation.x, 1e-4f)
+        assertEquals(initialOrientation.y, win.orientation.y, 1e-4f)
+        assertEquals(initialOrientation.z, win.orientation.z, 1e-4f)
+
+        // Release fist grab
+        wm.endWindowGrabReposition(1)
+
+        // Assert position is committed and session cleared
+        assertEquals(0.3f, win.position.x, 1e-4f)
+        assertEquals(-0.2f, win.position.y, 1e-4f)
+        assertEquals(-1.7f, win.position.z, 1e-4f)
     }
 }

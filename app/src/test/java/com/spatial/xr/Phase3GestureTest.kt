@@ -215,4 +215,152 @@ class Phase3GestureTest {
         assertEquals("R", rightLabel)
         assertEquals("#FFFF9100", rightColor)
     }
+
+    @Test
+    fun testFistAndOpenHandPostureClassification() {
+        // Model finger curl: d(tip, wrist) / d(pip, wrist)
+        fun isCurled(dTipWrist: Float, dPipWrist: Float): Boolean = dTipWrist < dPipWrist * 1.05f
+        fun isExtended(dTipWrist: Float, dPipWrist: Float): Boolean = dTipWrist > dPipWrist * 1.15f
+
+        // Open hand: tips extended well beyond PIP knuckles
+        val openDips = floatArrayOf(0.18f, 0.19f, 0.18f, 0.14f)
+        val openPips = floatArrayOf(0.12f, 0.13f, 0.12f, 0.10f)
+        var openExtCount = 0
+        for (i in 0..3) {
+            if (isExtended(openDips[i], openPips[i])) openExtCount++
+        }
+        assertTrue("Open hand has at least 3 extended fingers", openExtCount >= 3)
+
+        // Fist: tips curled tightly inside PIP knuckles
+        val fistDips = floatArrayOf(0.07f, 0.07f, 0.065f, 0.06f)
+        val fistPips = floatArrayOf(0.12f, 0.13f, 0.12f, 0.10f)
+        var fistCurlCount = 0
+        var fistExtCount = 0
+        for (i in 0..3) {
+            if (isCurled(fistDips[i], fistPips[i])) fistCurlCount++
+            if (isExtended(fistDips[i], fistPips[i])) fistExtCount++
+        }
+        assertTrue("Fist has at least 3 curled fingers", fistCurlCount >= 3)
+        assertEquals("Fist has 0 extended fingers", 0, fistExtCount)
+
+        // Pointing gesture: index extended, others curled -> neither fist nor open hand
+        val pointDips = floatArrayOf(0.18f, 0.07f, 0.065f, 0.06f)
+        val pointPips = floatArrayOf(0.12f, 0.13f, 0.12f, 0.10f)
+        var pointExtCount = 0
+        var pointCurlCount = 0
+        for (i in 0..3) {
+            if (isExtended(pointDips[i], pointPips[i])) pointExtCount++
+            if (isCurled(pointDips[i], pointPips[i])) pointCurlCount++
+        }
+        assertFalse("Pointing is not open hand", pointExtCount >= 3)
+        assertFalse("Pointing is not fist (index is extended)", pointCurlCount >= 3 && pointExtCount == 0)
+    }
+
+    @Test
+    fun testFistGrabGestureStateMachineOnlyTriggersFromOpenHandOverWindow() {
+        data class HandState(var isOpen: Boolean, var isFist: Boolean, var isOverWindow: Boolean)
+        class FistGrabController {
+            var wasOpenOverWindow: Boolean = false
+            var isGrabbing: Boolean = false
+
+            fun update(hand: HandState) {
+                if (isGrabbing) {
+                    if (!hand.isFist) {
+                        // Release fist -> position set, grab session ended
+                        isGrabbing = false
+                        wasOpenOverWindow = hand.isOpen && hand.isOverWindow
+                    }
+                } else {
+                    if (hand.isOpen) {
+                        // Arms the grab target only when open hand is over window
+                        wasOpenOverWindow = hand.isOverWindow
+                    } else if (hand.isFist) {
+                        // Triggers grab strictly if previously open hand over the window
+                        if (wasOpenOverWindow) {
+                            isGrabbing = true
+                        }
+                        wasOpenOverWindow = false
+                    } else {
+                        if (!hand.isOverWindow) wasOpenOverWindow = false
+                    }
+                }
+            }
+        }
+
+        val controller = FistGrabController()
+
+        // 1. Moving open hand over window arms the grab
+        controller.update(HandState(isOpen = true, isFist = false, isOverWindow = true))
+        assertTrue(controller.wasOpenOverWindow)
+        assertFalse(controller.isGrabbing)
+
+        // 2. Closing into a fist triggers grab!
+        controller.update(HandState(isOpen = false, isFist = true, isOverWindow = true))
+        assertTrue("Grab triggers on transition from open hand over window to closed fist", controller.isGrabbing)
+
+        // 3. Opening hand releases fist -> grab ends and new position is set
+        controller.update(HandState(isOpen = true, isFist = false, isOverWindow = true))
+        assertFalse("Opening hand releases grab", controller.isGrabbing)
+
+        // 4. Moving an ALREADY CLOSED FIST from outside over window does NOT trigger grab
+        val outsideFistController = FistGrabController()
+        // Fist formed outside window
+        outsideFistController.update(HandState(isOpen = false, isFist = true, isOverWindow = false))
+        assertFalse(outsideFistController.wasOpenOverWindow)
+        assertFalse(outsideFistController.isGrabbing)
+        // Moved over window while still a fist
+        outsideFistController.update(HandState(isOpen = false, isFist = true, isOverWindow = true))
+        assertFalse("Fist entering window without opening first must NOT trigger grab", outsideFistController.isGrabbing)
+
+        // 5. Pointing over window then closing to fist does NOT trigger grab (requires OPEN hand)
+        val pointingController = FistGrabController()
+        pointingController.update(HandState(isOpen = false, isFist = false, isOverWindow = true)) // Pointing
+        assertFalse(pointingController.wasOpenOverWindow)
+        pointingController.update(HandState(isOpen = false, isFist = true, isOverWindow = true)) // Fist
+        assertFalse("Fist from non-open hand must NOT trigger grab", pointingController.isGrabbing)
+    }
+
+    @Test
+    fun testSameHandInvariantForFistGrab() {
+        // Left hand open over window, Right hand makes a fist -> Right hand must NOT trigger grab!
+        class DualHandFistController {
+            var leftWasOpenOverWin = false
+            var rightWasOpenOverWin = false
+            var activeGrabHandIsLeft: Boolean? = null
+
+            fun updateLeft(isOpen: Boolean, isFist: Boolean, isOverWin: Boolean) {
+                if (isOpen) leftWasOpenOverWin = isOverWin
+                else if (isFist) {
+                    if (leftWasOpenOverWin && activeGrabHandIsLeft == null) {
+                        activeGrabHandIsLeft = true
+                    }
+                    leftWasOpenOverWin = false
+                }
+            }
+
+            fun updateRight(isOpen: Boolean, isFist: Boolean, isOverWin: Boolean) {
+                if (isOpen) rightWasOpenOverWin = isOverWin
+                else if (isFist) {
+                    if (rightWasOpenOverWin && activeGrabHandIsLeft == null) {
+                        activeGrabHandIsLeft = false
+                    }
+                    rightWasOpenOverWin = false
+                }
+            }
+        }
+
+        val dual = DualHandFistController()
+        // Left hand is open over window
+        dual.updateLeft(isOpen = true, isFist = false, isOverWin = true)
+        // Right hand is open away from window
+        dual.updateRight(isOpen = true, isFist = false, isOverWin = false)
+
+        // Right hand makes a fist
+        dual.updateRight(isOpen = false, isFist = true, isOverWin = false)
+        assertEquals("Right hand must NOT trigger grab because it was not over window", null, dual.activeGrabHandIsLeft)
+
+        // Left hand (the one over window) makes a fist
+        dual.updateLeft(isOpen = false, isFist = true, isOverWin = true)
+        assertEquals("Left hand triggers grab as the same hand that was open over window", true, dual.activeGrabHandIsLeft)
+    }
 }

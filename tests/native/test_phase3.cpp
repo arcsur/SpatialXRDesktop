@@ -197,6 +197,84 @@ void testThumbAndIndexTrackingDots() {
     std::cout << "[PASS] testThumbAndIndexTrackingDots\n";
 }
 
+void testFistAndOpenHandDetection() {
+    HandTrackingQnn tracker;
+    tracker.initialize();
+
+    // 1. Setup fully open hand (all fingers extended)
+    std::array<Joint3D, JOINT_COUNT> openJoints{};
+    openJoints[WRIST] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    // Index
+    openJoints[INDEX_FINGER_MCP] = {0.02f, 0.08f, 0.0f, 1.0f};
+    openJoints[INDEX_FINGER_PIP] = {0.02f, 0.12f, 0.0f, 1.0f};
+    openJoints[INDEX_FINGER_DIP] = {0.02f, 0.15f, 0.0f, 1.0f};
+    openJoints[INDEX_FINGER_TIP] = {0.02f, 0.18f, 0.0f, 1.0f};
+
+    // Middle
+    openJoints[MIDDLE_FINGER_MCP] = {0.0f, 0.085f, 0.0f, 1.0f};
+    openJoints[MIDDLE_FINGER_PIP] = {0.0f, 0.13f, 0.0f, 1.0f};
+    openJoints[MIDDLE_FINGER_DIP] = {0.0f, 0.16f, 0.0f, 1.0f};
+    openJoints[MIDDLE_FINGER_TIP] = {0.0f, 0.19f, 0.0f, 1.0f};
+
+    // Ring
+    openJoints[RING_FINGER_MCP] = {-0.02f, 0.08f, 0.0f, 1.0f};
+    openJoints[RING_FINGER_PIP] = {-0.02f, 0.12f, 0.0f, 1.0f};
+    openJoints[RING_FINGER_DIP] = {-0.02f, 0.15f, 0.0f, 1.0f};
+    openJoints[RING_FINGER_TIP] = {-0.02f, 0.18f, 0.0f, 1.0f};
+
+    // Pinky
+    openJoints[PINKY_MCP] = {-0.04f, 0.07f, 0.0f, 1.0f};
+    openJoints[PINKY_PIP] = {-0.04f, 0.10f, 0.0f, 1.0f};
+    openJoints[PINKY_DIP] = {-0.04f, 0.12f, 0.0f, 1.0f};
+    openJoints[PINKY_TIP] = {-0.04f, 0.14f, 0.0f, 1.0f};
+
+    // Thumb (extended wide, not pinching)
+    openJoints[THUMB_CMC] = {0.03f, 0.03f, 0.0f, 1.0f};
+    openJoints[THUMB_MCP] = {0.05f, 0.06f, 0.0f, 1.0f};
+    openJoints[THUMB_IP]  = {0.07f, 0.08f, 0.0f, 1.0f};
+    openJoints[THUMB_TIP] = {0.08f, 0.10f, 0.0f, 1.0f};
+
+    tracker.updateHandJoints(false, openJoints, 0.98f);
+    tracker.updatePinchGesture(false);
+    tracker.updateFistGesture(false);
+
+    assert(tracker.isOpenHand(false));
+    assert(!tracker.isFist(false));
+
+    // 2. Curl fingers into closed fist
+    std::array<Joint3D, JOINT_COUNT> fistJoints = openJoints;
+    fistJoints[INDEX_FINGER_TIP] = {0.02f, 0.07f, 0.02f, 1.0f};
+    fistJoints[MIDDLE_FINGER_TIP] = {0.0f, 0.07f, 0.02f, 1.0f};
+    fistJoints[RING_FINGER_TIP] = {-0.02f, 0.065f, 0.02f, 1.0f};
+    fistJoints[PINKY_TIP] = {-0.04f, 0.06f, 0.02f, 1.0f};
+    fistJoints[THUMB_TIP] = {0.03f, 0.08f, 0.03f, 1.0f};
+
+    tracker.resetHand(false);
+    tracker.updateHandJoints(false, fistJoints, 0.98f);
+    tracker.updatePinchGesture(false);
+    tracker.updateFistGesture(false);
+
+    assert(tracker.isFist(false));
+    assert(!tracker.isOpenHand(false));
+
+    // 3. Test hysteresis: minor flutter on pinky tip doesn't drop fist
+    fistJoints[PINKY_TIP] = {-0.04f, 0.085f, 0.02f, 1.0f};
+    tracker.updateHandJoints(false, fistJoints, 0.98f);
+    tracker.updateFistGesture(false);
+    assert(tracker.isFist(false));
+
+    // 4. Opening hand releases fist
+    tracker.resetHand(false);
+    tracker.updateHandJoints(false, openJoints, 0.98f);
+    tracker.updatePinchGesture(false);
+    tracker.updateFistGesture(false);
+    assert(!tracker.isFist(false));
+    assert(tracker.isOpenHand(false));
+
+    std::cout << "[PASS] testFistAndOpenHandDetection\n";
+}
+
 #ifndef SPATIAL_COMBINED_TEST_RUNNER
 int main() {
     std::cout << "--- Running Phase 3 Native Tests ---\n";
@@ -204,6 +282,7 @@ int main() {
     testPinchHysteresis();
     testTwoHandScaleAndLookAtPalm();
     testThumbAndIndexTrackingDots();
+    testFistAndOpenHandDetection();
     std::cout << "All Phase 3 Native Tests Passed!\n";
     return 0;
 }

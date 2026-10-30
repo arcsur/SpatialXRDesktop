@@ -261,6 +261,7 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeUpdateHandJoints(
     env->ReleaseFloatArrayElements(jointsArray, rawJoints, JNI_ABORT);
     tracker->updateHandJoints(isLeft, joints, confidence);
     tracker->updatePinchGesture(isLeft);
+    tracker->updateFistGesture(isLeft);
     return JNI_TRUE;
 }
 
@@ -342,6 +343,24 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeGetPinchState(JNIEnv* /*env*/, job
 }
 
 JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeGetFistState(JNIEnv* /*env*/, jobject /*thiz*/) {
+    auto* tracker = getOrCreateHandTracker();
+    int mask = 0;
+    if (tracker->isFist(true)) mask |= 1;
+    if (tracker->isFist(false)) mask |= 2;
+    return mask;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeGetOpenHandState(JNIEnv* /*env*/, jobject /*thiz*/) {
+    auto* tracker = getOrCreateHandTracker();
+    int mask = 0;
+    if (tracker->isOpenHand(true)) mask |= 1;
+    if (tracker->isOpenHand(false)) mask |= 2;
+    return mask;
+}
+
+JNIEXPORT jint JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeGetPinchPositions(
     JNIEnv* env, jobject /*thiz*/, jfloatArray leftPos, jfloatArray rightPos
 ) {
@@ -364,6 +383,34 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeGetPinchPositions(
         mask |= 2;
     }
 
+    return mask;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeGetHandPositions(
+    JNIEnv* env, jobject /*thiz*/, jfloatArray leftPos, jfloatArray rightPos
+) {
+    auto* tracker = getOrCreateHandTracker();
+    int mask = 0;
+
+    auto fillPos = [&](bool isLeft, jfloatArray outArray) {
+        if (!outArray) return;
+        const auto& hand = tracker->getHand(isLeft);
+        if (hand.isTracked) {
+            const auto& wrist = hand.joints[spatial::tracking::WRIST];
+            const auto& mcp = hand.joints[spatial::tracking::MIDDLE_FINGER_MCP];
+            jfloat pos[3] = {
+                (wrist.x + mcp.x) * 0.5f,
+                (wrist.y + mcp.y) * 0.5f,
+                (wrist.z + mcp.z) * 0.5f
+            };
+            env->SetFloatArrayRegion(outArray, 0, 3, pos);
+            mask |= (isLeft ? 1 : 2);
+        }
+    };
+
+    fillPos(true, leftPos);
+    fillPos(false, rightPos);
     return mask;
 }
 

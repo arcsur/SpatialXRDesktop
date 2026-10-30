@@ -46,8 +46,8 @@ class TutorialManager(
         TutorialStep(
             topic = TutorialTopic.RESIZE_MOVE,
             headline = "Iron Man 3D Window Manipulation",
-            description = "Pinch opposing diagonal corners with two hands to simultaneously resize, reposition in 3D space, and angle horizontally so one side is closer or farther. Pinch the top titlebar to reposition with automatic perspective scaling.",
-            interactionHint = "Pinch diagonal corners with both hands to resize, reposition, and angle in 3D."
+            description = "Make a fist over a window from an open hand to grab and move it anywhere in 3D space (X, Y, Z). Pinch opposing diagonal corners with two hands to resize. Pinch opposing side edges (left/right or top/bottom) to rotate and tilt up to ±60°.",
+            interactionHint = "Pinch diagonal corners to resize; pinch side edges to rotate and tilt in 3D."
         ),
         TutorialStep(
             topic = TutorialTopic.PALM_DOCK,

@@ -15,6 +15,7 @@ void testIndexPointerRay();
 void testPinchHysteresis();
 void testTwoHandScaleAndLookAtPalm();
 void testThumbAndIndexTrackingDots();
+void testFistAndOpenHandDetection();
 
 void testAtwIdentityWarp();
 void testAtwDifferentialRotationWarp();
@@ -41,6 +42,7 @@ int main() {
     testPinchHysteresis();
     testTwoHandScaleAndLookAtPalm();
     testThumbAndIndexTrackingDots();
+    testFistAndOpenHandDetection();
 
     std::cout << "\n--- [Phase 8: Asynchronous TimeWarp & OpenXR] ---\n";
     testAtwIdentityWarp();
@@ -48,7 +50,7 @@ int main() {
     testAtwTimingAndLatencyBenchmark();
 
     std::cout << "\n========================================\n";
-    std::cout << "  ALL NATIVE XR TESTS PASSED (14/14)   \n";
+    std::cout << "  ALL NATIVE XR TESTS PASSED (15/15)   \n";
     std::cout << "========================================\n";
     return 0;
 }

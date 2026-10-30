@@ -166,23 +166,6 @@ class AnimatedTutorialView @JvmOverloads constructor(
         paint.color = Color.parseColor("#1E2138")
         canvas.drawPath(windowPath, paint)
 
-        // Top grab bar for 3D repositioning
-        val topBarPath = Path().apply {
-            moveTo(tl.first + 15f, tl.second + 6f)
-            lineTo(tr.first - 15f, tr.second + 6f)
-            lineTo(tr.first - 15f, tr.second + 20f)
-            lineTo(tl.first + 15f, tl.second + 20f)
-            close()
-        }
-        paint.color = Color.parseColor("#3949AB")
-        canvas.drawPath(topBarPath, paint)
-
-        // Top grab bar handle pill
-        paint.color = colorCyan
-        val handleW = 36f
-        val topMidY = (tl.second + tr.second) * 0.5f + 12f
-        canvas.drawRoundRect(cx - handleW * 0.5f, topMidY - 4f, cx + handleW * 0.5f, topMidY + 4f, 4f, 4f, paint)
-
         // Window frame
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f

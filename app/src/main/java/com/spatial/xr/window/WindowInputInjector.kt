@@ -22,6 +22,13 @@ class WindowInputInjector {
         val pixelY: Float
     )
 
+    enum class WindowEdge {
+        LEFT,
+        RIGHT,
+        TOP,
+        BOTTOM
+    }
+
     companion object {
         fun raycastQuad(
             ray: Ray,
@@ -172,6 +179,49 @@ class WindowInputInjector {
                 distToRight -> if (localY >= 0) SpatialWindowManager.ResizeCorner.TOP_RIGHT else SpatialWindowManager.ResizeCorner.BOTTOM_RIGHT
                 distToLeft -> if (localY >= 0) SpatialWindowManager.ResizeCorner.TOP_LEFT else SpatialWindowManager.ResizeCorner.BOTTOM_LEFT
                 else -> if (localX >= 0) SpatialWindowManager.ResizeCorner.BOTTOM_RIGHT else SpatialWindowManager.ResizeCorner.BOTTOM_LEFT
+            }
+        }
+
+        /**
+         * Detects if (localX, localY) is grabbing a window side edge (strictly excluding corners).
+         */
+        fun getSideEdgeGrab(
+            localX: Float,
+            localY: Float,
+            quadWidthMeters: Float,
+            quadHeightMeters: Float,
+            cornerToleranceMeters: Float = 0.20f,
+            edgeSlackMeters: Float = 0.18f
+        ): WindowEdge? {
+            val halfW = quadWidthMeters * 0.5f
+            val halfH = quadHeightMeters * 0.5f
+
+            // If point is within corner tolerance of any of the 4 corners, it's a corner, not a side edge!
+            if (getNearestResizeCorner(localX, localY, quadWidthMeters, quadHeightMeters, cornerToleranceMeters) != null) {
+                return null
+            }
+
+            // Must be within outer bounds + edgeSlackMeters
+            if (abs(localX) > halfW + edgeSlackMeters || abs(localY) > halfH + edgeSlackMeters) {
+                return null
+            }
+
+            val distToRight = abs(localX - halfW)
+            val distToLeft = abs(localX - (-halfW))
+            val distToTop = abs(localY - halfH)
+            val distToBottom = abs(localY - (-halfH))
+
+            val minDist = minOf(distToRight, distToLeft, distToTop, distToBottom)
+            if (minDist > edgeSlackMeters) {
+                return null
+            }
+
+            return when (minDist) {
+                distToLeft -> WindowEdge.LEFT
+                distToRight -> WindowEdge.RIGHT
+                distToTop -> WindowEdge.TOP
+                distToBottom -> WindowEdge.BOTTOM
+                else -> null
             }
         }
 

@@ -59,6 +59,8 @@ class SpatialStereoRenderer(
         var indexScreenY: Float = 0.5f,
         var pinchDistanceMeters: Float = 0.1f,
         var isPinching: Boolean = false,
+        var isOpen: Boolean = false,
+        var isFist: Boolean = false,
         var aimScreenX: Float = 0.5f,
         var aimScreenY: Float = 0.5f
     )
@@ -73,6 +75,13 @@ class SpatialStereoRenderer(
     private val leftPinchPos = FloatArray(3)
     private val rightPinchPos = FloatArray(3)
 
+    private val leftHandPos = FloatArray(3)
+    private val rightHandPos = FloatArray(3)
+    private val smoothLeftHandPos = FloatArray(3)
+    private val smoothRightHandPos = FloatArray(3)
+    private var wasLeftHandPosValid = false
+    private var wasRightHandPosValid = false
+
     // Interpolated 60 FPS tracking states
     private val smoothLeftPinchPos = FloatArray(3)
     private val smoothRightPinchPos = FloatArray(3)
@@ -80,6 +89,17 @@ class SpatialStereoRenderer(
     private var wasRightPinchValid = false
     private var wasLeftTracked = false
     private var wasRightTracked = false
+
+    data class HandFistGrabState(
+        var wasOpenOverWindowId: Int? = null,
+        var isGrabbingWindow: Boolean = false,
+        var grabbedWindowId: Int? = null,
+        var grabStartHandPos: SpatialWindowManager.Vector3 = SpatialWindowManager.Vector3(0f, 0f, 0f),
+        var grabStartWindowPos: SpatialWindowManager.Vector3 = SpatialWindowManager.Vector3(0f, 0f, 0f)
+    )
+
+    val leftGrabState = HandFistGrabState()
+    val rightGrabState = HandFistGrabState()
 
     private fun smoothScreen(current: Float, target: Float, deadband: Float = 0.001f): Float {
         val diff = target - current
@@ -120,20 +140,16 @@ class SpatialStereoRenderer(
     private var palmLookStartTime = 0L
     private var palmLookCooldownUntil = 0L
     private var wasPinchingLastFrame = false
-    private var singleHandRepositionActive = false
-    private var singleHandRepositionWindowId: Int = 1
 
     private var singleHandResizeActive = false
     private var singleHandResizeWindowId: Int = 1
     private var activeResizeCorner: SpatialWindowManager.ResizeCorner? = null
     private var grabStartScreenX = 0f
     private var grabStartScreenY = 0f
-    private var grabStartWindowPos = SpatialWindowManager.Vector3(0f, 0f, -1.2f)
     private var grabStartWindowWidth = 0.96f
     private var grabStartWindowHeight = 0.54f
 
     private var hoveredResizeCorner: SpatialWindowManager.ResizeCorner? = null
-    private var isHoveringTopBar: Boolean = false
     private var hoveredWindowId: Int? = null
 
     private var currentViewportW: Float = 960f
@@ -424,32 +440,33 @@ class SpatialStereoRenderer(
             paint.color = Color.parseColor("#E0151828")
             canvas.drawPath(windowPath, paint)
 
+            val isWinFistGrabbed = (leftGrabState.isGrabbingWindow && leftGrabState.grabbedWindowId == win.windowId) ||
+                    (rightGrabState.isGrabbingWindow && rightGrabState.grabbedWindowId == win.windowId)
+            val isWinHoveredByOpenHand = (leftGrabState.wasOpenOverWindowId == win.windowId) ||
+                    (rightGrabState.wasOpenOverWindowId == win.windowId)
             val isWinHovered = (win.windowId == hoveredWindowId)
-            val isWinActive = (singleHandResizeActive && win.windowId == singleHandResizeWindowId) ||
-                    (singleHandRepositionActive && win.windowId == singleHandRepositionWindowId)
-
-            // Top grab bar for 3D repositioning
-            val topBarHovered = (isWinHovered && isHoveringTopBar) || (isWinActive && singleHandRepositionActive)
-            val topBarPath = Path().apply {
-                moveTo(pTL.first + 12f, pTL.second + 4f)
-                lineTo(pTR.first - 12f, pTR.second + 4f)
-                lineTo(pTR.first - 12f, pTR.second + (if (topBarHovered) 30f else 24f))
-                lineTo(pTL.first + 12f, pTL.second + (if (topBarHovered) 30f else 24f))
-                close()
-            }
-            paint.color = if (topBarHovered) Color.parseColor("#FF3949AB") else Color.parseColor("#FF283593")
-            canvas.drawPath(topBarPath, paint)
-
-            // Top grab bar center pill handle
-            paint.color = if (topBarHovered) Color.parseColor("#FF00FFFF") else Color.parseColor("#FF00E5FF")
-            val barMidY = (pTL.second + pTR.second) * 0.5f + 14f
-            val pillHalfW = if (topBarHovered) 45f else 30f
-            canvas.drawRoundRect(winCx - pillHalfW, barMidY - 4f, winCx + pillHalfW, barMidY + 4f, 4f, 4f, paint)
+            val isWinActive = singleHandResizeActive && win.windowId == singleHandResizeWindowId
 
             // Window Frame
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 3f
-            paint.color = Color.parseColor("#FF00E5FF")
+            when {
+                isWinFistGrabbed -> {
+                    paint.strokeWidth = 4.5f
+                    paint.color = Color.parseColor("#FF00FFFF") // Vivid active cyan glow when grabbed
+                }
+                isWinActive -> {
+                    paint.strokeWidth = 4.0f
+                    paint.color = Color.parseColor("#FF00E5FF")
+                }
+                isWinHoveredByOpenHand -> {
+                    paint.strokeWidth = 3.5f
+                    paint.color = Color.parseColor("#FF00E5FF") // Ready to grab
+                }
+                else -> {
+                    paint.strokeWidth = 2.5f
+                    paint.color = Color.parseColor("#9000E5FF")
+                }
+            }
             canvas.drawPath(windowPath, paint)
 
             // Diagonal corner-to-corner stretch guideline (Iron Man gesture)
@@ -814,11 +831,24 @@ class SpatialStereoRenderer(
         textPaint.textSize = 15f
         textPaint.isFakeBoldText = false
         textPaint.color = Color.parseColor("#9000E5FF")
-        val lStatus = if (leftHandInfo.isTracked) (if (leftHandInfo.isPinching) "L:🤏" else "L:🖐️") else "L:--"
-        val rStatus = if (rightHandInfo.isTracked) (if (rightHandInfo.isPinching) "R:🤏" else "R:🖐️") else "R:--"
+        val lStatus = if (leftHandInfo.isTracked) {
+            when {
+                leftHandInfo.isFist -> "L:✊"
+                leftHandInfo.isPinching -> "L:🤏"
+                else -> "L:🖐️"
+            }
+        } else "L:--"
+        val rStatus = if (rightHandInfo.isTracked) {
+            when {
+                rightHandInfo.isFist -> "R:✊"
+                rightHandInfo.isPinching -> "R:🤏"
+                else -> "R:🖐️"
+            }
+        } else "R:--"
+        val grabInfo = if (leftGrabState.isGrabbingWindow || rightGrabState.isGrabbingWindow) " • ✊ 3D MOVE" else ""
         val handInfo = if (isHandsTracked) "🖐️ [$lStatus  $rStatus]" else "🖐️ OPTICAL TRACKING: ON"
         val pinchInfo = if (isPinching) " • 🤏 PINCH" else ""
-        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo", ox + 24f, oy + 32f, textPaint)
+        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo$grabInfo", ox + 24f, oy + 32f, textPaint)
 
         textPaint.textAlign = Paint.Align.RIGHT
         textPaint.color = Color.parseColor("#70FFFFFF")
@@ -834,7 +864,10 @@ class SpatialStereoRenderer(
         val handMask = NativeBridge.nativeGetHandPointers(leftRay, rightRay)
         val pinchMask = NativeBridge.nativeGetPinchState()
         val pinchPosMask = NativeBridge.nativeGetPinchPositions(leftPinchPos, rightPinchPos)
-        isHandsTracked = (dotsMask != 0 || handMask != 0)
+        val fistMask = NativeBridge.nativeGetFistState()
+        val openMask = NativeBridge.nativeGetOpenHandState()
+        val handPosMask = NativeBridge.nativeGetHandPositions(leftHandPos, rightHandPos)
+        isHandsTracked = (dotsMask != 0 || handMask != 0 || fistMask != 0 || openMask != 0)
 
         val now = System.currentTimeMillis()
 
@@ -904,8 +937,12 @@ class SpatialStereoRenderer(
                 leftHandInfo.pinchDistanceMeters = leftHandInfo.pinchDistanceMeters * 0.70f + rawDist * 0.30f
             }
             leftHandInfo.isPinching = (leftDots[6] > 0.5f) || (pinchMask and 1 != 0)
+            leftHandInfo.isOpen = (openMask and 1 != 0)
+            leftHandInfo.isFist = (fistMask and 1 != 0)
         } else {
             leftHandInfo.isPinching = false
+            leftHandInfo.isOpen = false
+            leftHandInfo.isFist = false
             wasLeftTracked = false
         }
 
@@ -952,8 +989,12 @@ class SpatialStereoRenderer(
                 rightHandInfo.pinchDistanceMeters = rightHandInfo.pinchDistanceMeters * 0.70f + rawDist * 0.30f
             }
             rightHandInfo.isPinching = (rightDots[6] > 0.5f) || (pinchMask and 2 != 0)
+            rightHandInfo.isOpen = (openMask and 2 != 0)
+            rightHandInfo.isFist = (fistMask and 2 != 0)
         } else {
             rightHandInfo.isPinching = false
+            rightHandInfo.isOpen = false
+            rightHandInfo.isFist = false
             wasRightTracked = false
         }
 
@@ -990,7 +1031,45 @@ class SpatialStereoRenderer(
             wasRightPinchValid = false
         }
 
-        // 2. Iron Man Two-Hand Diagonal Corner Pinch (Simultaneous Resize, Reposition, Yaw Angle)
+        // Interpolate 3D Hand Positions at 60 FPS
+        val leftHandValid = (handPosMask and 1 != 0)
+        if (leftHandValid) {
+            if (!wasLeftHandPosValid) {
+                smoothLeftHandPos[0] = leftHandPos[0]
+                smoothLeftHandPos[1] = leftHandPos[1]
+                smoothLeftHandPos[2] = leftHandPos[2]
+                wasLeftHandPosValid = true
+            } else {
+                smoothLeftHandPos[0] = smoothMetric(smoothLeftHandPos[0], leftHandPos[0])
+                smoothLeftHandPos[1] = smoothMetric(smoothLeftHandPos[1], leftHandPos[1])
+                smoothLeftHandPos[2] = smoothMetric(smoothLeftHandPos[2], leftHandPos[2])
+            }
+        } else {
+            wasLeftHandPosValid = false
+        }
+
+        val rightHandValid = (handPosMask and 2 != 0)
+        if (rightHandValid) {
+            if (!wasRightHandPosValid) {
+                smoothRightHandPos[0] = rightHandPos[0]
+                smoothRightHandPos[1] = rightHandPos[1]
+                smoothRightHandPos[2] = rightHandPos[2]
+                wasRightHandPosValid = true
+            } else {
+                smoothRightHandPos[0] = smoothMetric(smoothRightHandPos[0], rightHandPos[0])
+                smoothRightHandPos[1] = smoothMetric(smoothRightHandPos[1], rightHandPos[1])
+                smoothRightHandPos[2] = smoothMetric(smoothRightHandPos[2], rightHandPos[2])
+            }
+        } else {
+            wasRightHandPosValid = false
+        }
+
+        // 2. Fist Grab 3D Window Repositioning (either hand)
+        // Transition from open hand over window to closed fist on same hand moves window in X, Y, Z without rotation
+        processHandFistGrab(leftHandInfo, leftGrabState, rightGrabState, smoothLeftHandPos)
+        processHandFistGrab(rightHandInfo, rightGrabState, leftGrabState, smoothRightHandPos)
+
+        // 3. Two-Hand Corner Resize or Side Edge Rotation/Tilt
         val bothPinching = (leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) ||
                 ((pinchMask and 3) == 3 && wasLeftPinchValid && wasRightPinchValid)
 
@@ -1006,48 +1085,50 @@ class SpatialStereoRenderer(
                     activeTwoHandWindowId = targetWin.windowId
                     twoHandTransformActive = true
                     windowManager.setFocusedWindow(activeTwoHandWindowId)
-                    windowManager.startTwoHandDiagonalTransform(activeTwoHandWindowId, h1, h2)
+                    windowManager.startTwoHandGesture(activeTwoHandWindowId, h1, h2)
                     isPinching = true
                 }
             } else {
-                windowManager.updateTwoHandDiagonalTransform(activeTwoHandWindowId, h1, h2)
+                windowManager.updateTwoHandGesture(activeTwoHandWindowId, h1, h2)
                 isPinching = true
             }
         } else {
             if (twoHandTransformActive) {
-                windowManager.endTwoHandDiagonalTransform(activeTwoHandWindowId)
+                windowManager.endTwoHandGesture(activeTwoHandWindowId)
                 twoHandTransformActive = false
             }
 
-            // 3. Single-Hand Pointer Ray & Interactions
-            val primaryHand = if (rightHandInfo.isTracked) rightHandInfo else if (leftHandInfo.isTracked) leftHandInfo else null
-            if (primaryHand != null) {
-                val isCurrentHandPinching = primaryHand.isPinching
-                // During pinch hold/manipulation, track direct index finger tip position to eliminate ray angular leverage
-                val normX = if (isCurrentHandPinching) primaryHand.indexScreenX else primaryHand.aimScreenX
-                val normY = if (isCurrentHandPinching) primaryHand.indexScreenY else primaryHand.aimScreenY
-
-                setPointer(normX, normY, active = true, pinching = isCurrentHandPinching)
-
-                val pinchDown = isCurrentHandPinching && !wasPinchingLastFrame
-                val pinchUp = !isCurrentHandPinching && wasPinchingLastFrame
-
-                handlePointerInteractions(normX, normY, pinchDown, isCurrentHandPinching, pinchUp)
-                wasPinchingLastFrame = isCurrentHandPinching
-            } else {
+            val isFistGrabbing = leftGrabState.isGrabbingWindow || rightGrabState.isGrabbingWindow
+            if (isFistGrabbing) {
+                // Window is being physically translated by fist; suppress pointer rays
+                setPointer(0.5f, 0.5f, active = false, pinching = false)
                 wasPinchingLastFrame = false
-                isPointerActive = false
-                isPinching = false
-                hoveredWindowId = null
-                hoveredResizeCorner = null
-                isHoveringTopBar = false
-                if (singleHandRepositionActive) {
-                    windowManager.endTopBarReposition(singleHandRepositionWindowId)
-                    singleHandRepositionActive = false
-                }
-                if (singleHandResizeActive) {
-                    singleHandResizeActive = false
-                    activeResizeCorner = null
+            } else {
+                // 4. Single-Hand Pointer Ray & Interactions
+                val primaryHand = if (rightHandInfo.isTracked) rightHandInfo else if (leftHandInfo.isTracked) leftHandInfo else null
+                if (primaryHand != null) {
+                    val isCurrentHandPinching = primaryHand.isPinching
+                    // During pinch hold/manipulation, track direct index finger tip position to eliminate ray angular leverage
+                    val normX = if (isCurrentHandPinching) primaryHand.indexScreenX else primaryHand.aimScreenX
+                    val normY = if (isCurrentHandPinching) primaryHand.indexScreenY else primaryHand.aimScreenY
+
+                    setPointer(normX, normY, active = true, pinching = isCurrentHandPinching)
+
+                    val pinchDown = isCurrentHandPinching && !wasPinchingLastFrame
+                    val pinchUp = !isCurrentHandPinching && wasPinchingLastFrame
+
+                    handlePointerInteractions(normX, normY, pinchDown, isCurrentHandPinching, pinchUp)
+                    wasPinchingLastFrame = isCurrentHandPinching
+                } else {
+                    wasPinchingLastFrame = false
+                    isPointerActive = false
+                    isPinching = false
+                    hoveredWindowId = null
+                    hoveredResizeCorner = null
+                    if (singleHandResizeActive) {
+                        singleHandResizeActive = false
+                        activeResizeCorner = null
+                    }
                 }
             }
         }
@@ -1060,11 +1141,129 @@ class SpatialStereoRenderer(
         val worldHitX: Float,
         val worldHitY: Float,
         val worldHitZ: Float,
-        val isOverTopBar: Boolean,
         val nearestCorner: SpatialWindowManager.ResizeCorner?,
         val isOverWindowBody: Boolean,
         val handleDistance: Float
     )
+
+    private fun isScreenPointOverWindow(win: SpatialWindowManager.SpatialWindow, screenX: Float, screenY: Float): Boolean {
+        val cx = currentViewportW * 0.5f
+        val cy = currentViewportH * 0.5f
+        val focal = currentViewportH * 0.95f
+        val distZ = Math.abs(win.position.z).coerceAtLeast(0.4f)
+        val winScreenX = cx + (win.position.x / distZ) * focal
+        val winScreenY = cy - (win.position.y / distZ) * focal
+
+        val deltaScreenX = screenX - winScreenX
+        val deltaScreenY = screenY - winScreenY
+
+        val localX = (deltaScreenX / focal) * distZ
+        val localY = -(deltaScreenY / focal) * distZ
+
+        val halfW = win.widthMeters * 0.5f
+        val halfH = win.heightMeters * 0.5f
+        return Math.abs(localX) <= (halfW + 0.05f) && Math.abs(localY) <= (halfH + 0.05f)
+    }
+
+    private fun findWindowUnderHand(handInfo: HandRenderInfo, smoothHandPos: FloatArray): SpatialWindowManager.SpatialWindow? {
+        val cx = currentViewportW * 0.5f
+        val cy = currentViewportH * 0.5f
+        val aimScreenX = cx + (handInfo.aimScreenX - 0.5f) * currentViewportW
+        val aimScreenY = cy + (handInfo.aimScreenY - 0.5f) * currentViewportH
+        val (hnx, hny) = project3DToScreen(smoothHandPos[0], smoothHandPos[1], smoothHandPos[2])
+        val handScreenX = cx + (hnx - 0.5f) * currentViewportW
+        val handScreenY = cy + (hny - 0.5f) * currentViewportH
+
+        val matchingWindows = windowManager.getAllWindows().filter { win ->
+            isScreenPointOverWindow(win, aimScreenX, aimScreenY) ||
+            isScreenPointOverWindow(win, handScreenX, handScreenY)
+        }
+        return matchingWindows.maxByOrNull { it.position.z }
+    }
+
+    private fun processHandFistGrab(
+        handInfo: HandRenderInfo,
+        grabState: HandFistGrabState,
+        otherGrabState: HandFistGrabState,
+        smoothHandPos: FloatArray
+    ) {
+        if (!handInfo.isTracked) {
+            if (grabState.isGrabbingWindow) {
+                val winId = grabState.grabbedWindowId
+                if (winId != null) {
+                    windowManager.endWindowGrabReposition(winId)
+                }
+                grabState.isGrabbingWindow = false
+                grabState.grabbedWindowId = null
+            }
+            grabState.wasOpenOverWindowId = null
+            return
+        }
+
+        val currentHandPos3D = SpatialWindowManager.Vector3(
+            smoothHandPos[0],
+            smoothHandPos[1],
+            smoothHandPos[2]
+        )
+
+        if (grabState.isGrabbingWindow) {
+            val winId = grabState.grabbedWindowId
+            val win = if (winId != null) windowManager.getWindow(winId) else null
+            if (win == null || !handInfo.isFist) {
+                // Fist opened or released: commit new window position
+                if (winId != null) {
+                    windowManager.endWindowGrabReposition(winId)
+                }
+                grabState.isGrabbingWindow = false
+                grabState.grabbedWindowId = null
+                grabState.wasOpenOverWindowId = if (handInfo.isOpen) {
+                    findWindowUnderHand(handInfo, smoothHandPos)?.windowId
+                } else null
+            } else {
+                // Window is grabbed: move window in X, Y, and Z dimensions without rotation
+                val deltaX = currentHandPos3D.x - grabState.grabStartHandPos.x
+                val deltaY = currentHandPos3D.y - grabState.grabStartHandPos.y
+                val deltaZ = currentHandPos3D.z - grabState.grabStartHandPos.z
+
+                val targetX = grabState.grabStartWindowPos.x + deltaX
+                val targetY = grabState.grabStartWindowPos.y + deltaY
+                val targetZ = (grabState.grabStartWindowPos.z + deltaZ).coerceIn(-4.0f, -0.4f)
+
+                win.position = SpatialWindowManager.Vector3(
+                    win.position.x * 0.15f + targetX * 0.85f,
+                    win.position.y * 0.15f + targetY * 0.85f,
+                    win.position.z * 0.15f + targetZ * 0.85f
+                )
+            }
+        } else {
+            // Hand not currently grabbing
+            if (handInfo.isOpen) {
+                // Arm grab target when open hand is over window
+                val win = findWindowUnderHand(handInfo, smoothHandPos)
+                grabState.wasOpenOverWindowId = win?.windowId
+            } else if (handInfo.isFist) {
+                // Only trigger grab when moving from open hand over window to closed fist on same hand
+                val targetWinId = grabState.wasOpenOverWindowId
+                if (targetWinId != null && !(otherGrabState.isGrabbingWindow && otherGrabState.grabbedWindowId == targetWinId)) {
+                    val win = windowManager.getWindow(targetWinId)
+                    if (win != null) {
+                        grabState.isGrabbingWindow = true
+                        grabState.grabbedWindowId = targetWinId
+                        grabState.grabStartHandPos = currentHandPos3D
+                        grabState.grabStartWindowPos = win.position
+                        windowManager.setFocusedWindow(targetWinId)
+                        windowManager.startWindowGrabReposition(targetWinId, currentHandPos3D)
+                    }
+                }
+                grabState.wasOpenOverWindowId = null
+            } else {
+                val win = findWindowUnderHand(handInfo, smoothHandPos)
+                if (win == null || win.windowId != grabState.wasOpenOverWindowId) {
+                    grabState.wasOpenOverWindowId = null
+                }
+            }
+        }
+    }
 
     private fun findBestWindowCandidate(screenX: Float, screenY: Float): WindowHitCandidate? {
         val cx = currentViewportW * 0.5f
@@ -1087,11 +1286,6 @@ class SpatialStereoRenderer(
             val worldHitY = win.position.y + localY
             val worldHitZ = win.position.z
 
-            val isOverTopBar = WindowInputInjector.isTopGrabBarHitWithSlack(
-                localX, localY, win.widthMeters, win.heightMeters,
-                barThicknessMeters = 0.14f,
-                slackMeters = 0.22f
-            )
             val nearestCorner = WindowInputInjector.getNearestResizeCorner(
                 localX, localY, win.widthMeters, win.heightMeters,
                 toleranceMeters = 0.24f
@@ -1105,9 +1299,7 @@ class SpatialStereoRenderer(
             val isOverWindowBody = Math.abs(localX) <= (halfW + 0.05f) && Math.abs(localY) <= (halfH + 0.05f)
 
             var handleDist = Float.MAX_VALUE
-            if (isOverTopBar) {
-                handleDist = Math.abs(localY - halfH)
-            } else if (nearestCorner != null) {
+            if (nearestCorner != null) {
                 val cornerPos = when (nearestCorner) {
                     SpatialWindowManager.ResizeCorner.TOP_RIGHT -> Pair(halfW, halfH)
                     SpatialWindowManager.ResizeCorner.TOP_LEFT -> Pair(-halfW, halfH)
@@ -1119,7 +1311,7 @@ class SpatialStereoRenderer(
                 handleDist = kotlin.math.sqrt(dx * dx + dy * dy)
             }
 
-            if (isOverTopBar || nearestCorner != null || isOverWindowBody) {
+            if (nearestCorner != null || isOverWindowBody) {
                 candidates.add(
                     WindowHitCandidate(
                         window = win,
@@ -1128,7 +1320,6 @@ class SpatialStereoRenderer(
                         worldHitX = worldHitX,
                         worldHitY = worldHitY,
                         worldHitZ = worldHitZ,
-                        isOverTopBar = isOverTopBar,
                         nearestCorner = nearestCorner,
                         isOverWindowBody = isOverWindowBody,
                         handleDistance = handleDist
@@ -1139,7 +1330,7 @@ class SpatialStereoRenderer(
 
         if (candidates.isEmpty()) return null
 
-        val handleCandidates = candidates.filter { it.isOverTopBar || it.nearestCorner != null }
+        val handleCandidates = candidates.filter { it.nearestCorner != null }
         if (handleCandidates.isNotEmpty()) {
             return handleCandidates.minWithOrNull(
                 compareBy<WindowHitCandidate> { it.handleDistance }
@@ -1160,33 +1351,7 @@ class SpatialStereoRenderer(
         val screenX = cx + (nx - 0.5f) * currentViewportW
         val screenY = cy + (ny - 0.5f) * currentViewportH
 
-        // 1. Ongoing single-hand window reposition (smooth tracking from fixed grab anchor)
-        if (singleHandRepositionActive) {
-            val win = windowManager.getWindow(singleHandRepositionWindowId)
-            if (win != null) {
-                val distZ = Math.abs(grabStartWindowPos.z).coerceAtLeast(0.4f)
-                val deltaScreenX = screenX - grabStartScreenX
-                val deltaScreenY = screenY - grabStartScreenY
-                val deltaMetersX = (deltaScreenX / focal) * distZ
-                val deltaMetersY = -(deltaScreenY / focal) * distZ
-
-                if (isPinching) {
-                    val targetX = grabStartWindowPos.x + deltaMetersX
-                    val targetY = grabStartWindowPos.y + deltaMetersY
-                    win.position = SpatialWindowManager.Vector3(
-                        win.position.x * 0.18f + targetX * 0.82f,
-                        win.position.y * 0.18f + targetY * 0.82f,
-                        grabStartWindowPos.z
-                    )
-                }
-            }
-            if (pinchUp) {
-                singleHandRepositionActive = false
-            }
-            return
-        }
-
-        // 2. Ongoing single-hand window resize (smooth 1:1 scaling from grab anchor)
+        // 1. Ongoing single-hand window corner resize (smooth 1:1 scaling from grab anchor)
         if (singleHandResizeActive) {
             val win = windowManager.getWindow(singleHandResizeWindowId)
             if (win != null) {
@@ -1232,33 +1397,21 @@ class SpatialStereoRenderer(
             return
         }
 
-        // 3. Find closest window handle or window body near pointer
+        // 2. Find closest window handle or window body near pointer
         val candidate = findBestWindowCandidate(screenX, screenY)
 
-        if (candidate != null && (candidate.isOverTopBar || candidate.nearestCorner != null)) {
+        if (candidate != null && candidate.nearestCorner != null) {
             hoveredWindowId = candidate.window.windowId
-            isHoveringTopBar = candidate.isOverTopBar
             hoveredResizeCorner = candidate.nearestCorner
         } else {
-            hoveredWindowId = null
-            isHoveringTopBar = false
+            hoveredWindowId = candidate?.window?.windowId
             hoveredResizeCorner = null
         }
 
         if (candidate != null) {
             if (pinchDown) {
-                if (candidate.isOverTopBar) {
-                    singleHandRepositionActive = true
-                    singleHandResizeActive = false
-                    singleHandRepositionWindowId = candidate.window.windowId
-                    windowManager.setFocusedWindow(candidate.window.windowId)
-                    grabStartScreenX = screenX
-                    grabStartScreenY = screenY
-                    grabStartWindowPos = candidate.window.position
-                    return
-                } else if (candidate.nearestCorner != null) {
+                if (candidate.nearestCorner != null) {
                     singleHandResizeActive = true
-                    singleHandRepositionActive = false
                     singleHandResizeWindowId = candidate.window.windowId
                     activeResizeCorner = candidate.nearestCorner
                     grabStartScreenX = screenX

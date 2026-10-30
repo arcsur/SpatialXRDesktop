@@ -95,6 +95,15 @@ public:
         return isLeft ? leftPinching_ : rightPinching_;
     }
 
+    // Fist and Open Hand Gestures for 3D Window Grabbing
+    void updateFistGesture(bool isLeft);
+    bool isFist(bool isLeft) const {
+        return isLeft ? leftFist_ : rightFist_;
+    }
+    bool isOpenHand(bool isLeft) const {
+        return isLeft ? leftOpenHand_ : rightOpenHand_;
+    }
+
     // Task 3.2: Look-at-Palm Detector
     static bool isLookingAtPalm(const HandSkeleton& hand, const std::array<float, 3>& gazeDirection = {0.0f, 0.0f, -1.0f});
 
@@ -130,6 +139,10 @@ private:
     HandSkeleton rightHand_{};
     bool leftPinching_{false};
     bool rightPinching_{false};
+    bool leftFist_{false};
+    bool rightFist_{false};
+    bool leftOpenHand_{false};
+    bool rightOpenHand_{false};
     bool initialized_{false};
 };
 

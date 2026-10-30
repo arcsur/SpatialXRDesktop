@@ -41,6 +41,9 @@ object NativeBridge {
     external fun nativeGetHandPointers(outLeftRay: FloatArray, outRightRay: FloatArray): Int
     external fun nativeGetPinchState(): Int // Bit 0: Left, Bit 1: Right
     external fun nativeGetPinchPositions(outLeftPos: FloatArray, outRightPos: FloatArray): Int
+    external fun nativeGetFistState(): Int // Bit 0: Left, Bit 1: Right
+    external fun nativeGetOpenHandState(): Int // Bit 0: Left, Bit 1: Right
+    external fun nativeGetHandPositions(outLeftPos: FloatArray, outRightPos: FloatArray): Int
     external fun nativeIsLookingAtPalm(isLeft: Boolean): Boolean
     external fun nativeGetTwoHandTransform(
         initLeftPos: FloatArray,

@@ -11,4 +11,4 @@
 *.aab
 .codegraph
 .kotlin
-
+build-native/

@@ -11,6 +11,10 @@ bool HandTrackingQnn::initialize(const std::string& /*palmModelPath*/, const std
     initialized_ = true;
     leftPinching_ = false;
     rightPinching_ = false;
+    leftFist_ = false;
+    rightFist_ = false;
+    leftOpenHand_ = false;
+    rightOpenHand_ = false;
     return true;
 }
 
@@ -64,8 +68,15 @@ void HandTrackingQnn::resetHand(bool isLeft) {
     HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
     hand.isTracked = false;
     hand.trackingConfidence = 0.0f;
-    if (isLeft) leftPinching_ = false;
-    else rightPinching_ = false;
+    if (isLeft) {
+        leftPinching_ = false;
+        leftFist_ = false;
+        leftOpenHand_ = false;
+    } else {
+        rightPinching_ = false;
+        rightFist_ = false;
+        rightOpenHand_ = false;
+    }
 }
 
 bool HandTrackingQnn::getThumbAndIndexPositions(
@@ -181,8 +192,21 @@ bool HandTrackingQnn::processCameraFrame(int width, int height, const uint8_t* y
             joints[RING_FINGER_MCP] = to3D(cx + (isLeft ? -10.0f : 10.0f), cy - 20.0f);
             joints[RING_FINGER_TIP] = to3D(cx + (isLeft ? -10.0f : 10.0f), static_cast<float>(minY));
 
+            auto interp = [](const Joint3D& a, const Joint3D& b, float t) -> Joint3D {
+                return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, 1.0f };
+            };
+            joints[INDEX_FINGER_PIP] = interp(joints[INDEX_FINGER_MCP], joints[INDEX_FINGER_TIP], 0.45f);
+            joints[INDEX_FINGER_DIP] = interp(joints[INDEX_FINGER_MCP], joints[INDEX_FINGER_TIP], 0.75f);
+            joints[MIDDLE_FINGER_PIP] = interp(joints[MIDDLE_FINGER_MCP], joints[MIDDLE_FINGER_TIP], 0.45f);
+            joints[MIDDLE_FINGER_DIP] = interp(joints[MIDDLE_FINGER_MCP], joints[MIDDLE_FINGER_TIP], 0.75f);
+            joints[RING_FINGER_PIP] = interp(joints[RING_FINGER_MCP], joints[RING_FINGER_TIP], 0.45f);
+            joints[RING_FINGER_DIP] = interp(joints[RING_FINGER_MCP], joints[RING_FINGER_TIP], 0.75f);
+            joints[PINKY_PIP] = interp(joints[PINKY_MCP], joints[PINKY_TIP], 0.45f);
+            joints[PINKY_DIP] = interp(joints[PINKY_MCP], joints[PINKY_TIP], 0.75f);
+
             updateHandJoints(isLeft, joints, 0.95f);
             updatePinchGesture(isLeft);
+            updateFistGesture(isLeft);
         } else {
             hand.isTracked = false;
         }
@@ -245,7 +269,7 @@ PinchPhase HandTrackingQnn::updatePinchGesture(bool isLeft) {
     const HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
     bool& currentlyPinching = isLeft ? leftPinching_ : rightPinching_;
 
-    if (!hand.isTracked) {
+    if (!hand.isTracked || isFist(isLeft)) {
         if (currentlyPinching) {
             currentlyPinching = false;
             return PinchPhase::PinchUp;
@@ -271,6 +295,85 @@ PinchPhase HandTrackingQnn::updatePinchGesture(bool isLeft) {
         }
         return PinchPhase::PinchHold;
     }
+}
+
+void HandTrackingQnn::updateFistGesture(bool isLeft) {
+    const HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+    bool& currentlyFist = isLeft ? leftFist_ : rightFist_;
+    bool& currentlyOpen = isLeft ? leftOpenHand_ : rightOpenHand_;
+    bool& currentlyPinching = isLeft ? leftPinching_ : rightPinching_;
+
+    if (!hand.isTracked) {
+        currentlyFist = false;
+        currentlyOpen = false;
+        return;
+    }
+
+    auto isFingerCurled = [&](HandJointIndex tipIdx, HandJointIndex pipIdx, HandJointIndex mcpIdx) -> bool {
+        const auto& wrist = hand.joints[WRIST];
+        const auto& tip = hand.joints[tipIdx];
+        const auto& pip = hand.joints[pipIdx];
+        const auto& mcp = hand.joints[mcpIdx];
+
+        float dTipWrist = euclideanDistance(tip, wrist);
+        float dPipWrist = euclideanDistance(pip, wrist);
+        float dTipMcp = euclideanDistance(tip, mcp);
+
+        if (dPipWrist < 0.01f || dTipMcp < 0.005f) return false;
+        return (dTipWrist < dPipWrist * 1.05f) || (dTipMcp < 0.045f);
+    };
+
+    auto isFingerExtended = [&](HandJointIndex tipIdx, HandJointIndex pipIdx, HandJointIndex mcpIdx) -> bool {
+        const auto& wrist = hand.joints[WRIST];
+        const auto& tip = hand.joints[tipIdx];
+        const auto& pip = hand.joints[pipIdx];
+        const auto& mcp = hand.joints[mcpIdx];
+
+        float dTipWrist = euclideanDistance(tip, wrist);
+        float dPipWrist = euclideanDistance(pip, wrist);
+        float dTipMcp = euclideanDistance(tip, mcp);
+
+        if (dPipWrist < 0.01f || dTipMcp < 0.005f) return false;
+        return (dTipWrist > dPipWrist * 1.15f) && (dTipMcp > 0.055f);
+    };
+
+    int curledCount = 0;
+    int extendedCount = 0;
+
+    if (isFingerCurled(INDEX_FINGER_TIP, INDEX_FINGER_PIP, INDEX_FINGER_MCP)) curledCount++;
+    if (isFingerCurled(MIDDLE_FINGER_TIP, MIDDLE_FINGER_PIP, MIDDLE_FINGER_MCP)) curledCount++;
+    if (isFingerCurled(RING_FINGER_TIP, RING_FINGER_PIP, RING_FINGER_MCP)) curledCount++;
+    if (isFingerCurled(PINKY_TIP, PINKY_PIP, PINKY_MCP)) curledCount++;
+
+    if (isFingerExtended(INDEX_FINGER_TIP, INDEX_FINGER_PIP, INDEX_FINGER_MCP)) extendedCount++;
+    if (isFingerExtended(MIDDLE_FINGER_TIP, MIDDLE_FINGER_PIP, MIDDLE_FINGER_MCP)) extendedCount++;
+    if (isFingerExtended(RING_FINGER_TIP, RING_FINGER_PIP, RING_FINGER_MCP)) extendedCount++;
+    if (isFingerExtended(PINKY_TIP, PINKY_PIP, PINKY_MCP)) extendedCount++;
+
+    // Hysteresis for fist state
+    if (!currentlyFist) {
+        // Transition to fist: at least 3 curled fingers and 0 extended
+        if (curledCount >= 3 && extendedCount == 0) {
+            currentlyFist = true;
+            currentlyPinching = false;
+        }
+    } else {
+        // Release fist: at least 2 fingers extended or at most 1 curled
+        if (extendedCount >= 2 || curledCount <= 1) {
+            currentlyFist = false;
+        }
+    }
+
+    if (currentlyFist) {
+        currentlyPinching = false;
+    }
+
+    bool pinching = isPinching(isLeft);
+    float pinchDist = euclideanDistance(hand.joints[INDEX_FINGER_TIP], hand.joints[THUMB_TIP]);
+    bool thumbNotPinching = !pinching && (pinchDist > PINCH_UP_THRESHOLD_METERS);
+
+    // Open hand state: at least 3 extended fingers, not pinching, not a fist
+    currentlyOpen = (!currentlyFist && !pinching && extendedCount >= 3 && thumbNotPinching);
 }
 
 bool HandTrackingQnn::isLookingAtPalm(const HandSkeleton& hand, const std::array<float, 3>& gazeDirection) {

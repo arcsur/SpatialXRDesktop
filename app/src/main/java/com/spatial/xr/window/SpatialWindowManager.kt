@@ -29,6 +29,8 @@ class SpatialWindowManager(
             return if (len < 1e-6f) Vector3(0f, 0f, 1f) else Vector3(x / len, y / len, z / len)
         }
         fun dot(other: Vector3): Float = x * other.x + y * other.y + z * other.z
+        operator fun plus(other: Vector3): Vector3 = Vector3(x + other.x, y + other.y, z + other.z)
+        operator fun minus(other: Vector3): Vector3 = Vector3(x - other.x, y - other.y, z - other.z)
     }
 
     data class Quaternion(val w: Float, val x: Float, val y: Float, val z: Float) {
@@ -40,6 +42,8 @@ class SpatialWindowManager(
                 z = w * other.z + x * other.y - y * other.x + z * other.w
             )
         }
+
+        fun conjugate(): Quaternion = Quaternion(w, -x, -y, -z)
 
         companion object {
             val IDENTITY = Quaternion(1f, 0f, 0f, 0f)
@@ -360,6 +364,12 @@ class SpatialWindowManager(
         return true
     }
 
+    enum class TwoHandGestureType {
+        CORNER_RESIZE,
+        HORIZONTAL_ROTATION,
+        VERTICAL_TILT
+    }
+
     data class TwoHandResizeSession(
         val windowId: Int,
         val initialDistance: Float,
@@ -374,7 +384,9 @@ class SpatialWindowManager(
         val initialOrientation: Quaternion = Quaternion.IDENTITY,
         val has3DTransform: Boolean = false,
         var lastAppliedDeltaYaw: Float = 0f,
-        var lastAppliedScale: Float = 1.0f
+        var lastAppliedScale: Float = 1.0f,
+        val gestureType: TwoHandGestureType = TwoHandGestureType.CORNER_RESIZE,
+        var lastAppliedAngle: Float = 0f
     )
 
     data class RepositionSession(
@@ -389,8 +401,8 @@ class SpatialWindowManager(
     private val repositionSessions = ConcurrentHashMap<Int, RepositionSession>()
 
     /**
-     * Iron Man style two-hand diagonal corner-to-corner pinch & transform.
-     * Simultaneously resizes, repositions in 3D space, and adjusts horizontal yaw angle.
+     * Two-hand diagonal corner-to-corner pinch stretch gesture.
+     * Exclusively performs window resizing (width & height), strictly locking window orientation and position.
      */
     fun startTwoHandDiagonalTransform(
         windowId: Int,
@@ -434,7 +446,9 @@ class SpatialWindowManager(
             initialOrientation = window.orientation,
             has3DTransform = true,
             lastAppliedDeltaYaw = 0f,
-            lastAppliedScale = 1.0f
+            lastAppliedScale = 1.0f,
+            gestureType = TwoHandGestureType.CORNER_RESIZE,
+            lastAppliedAngle = 0f
         )
         setFocusedWindow(windowId)
         return true
@@ -465,39 +479,9 @@ class SpatialWindowManager(
         window.widthMeters = (session.initialWidth * scale).coerceIn(0.40f, 3.0f)
         window.heightMeters = (session.initialHeight * scale).coerceIn(0.25f, 2.0f)
 
-        // 2. 3D Repositioning (translate based on midpoint movement)
-        val currentMidpoint = Vector3(
-            (hand1Pos.x + hand2Pos.x) * 0.5f,
-            (hand1Pos.y + hand2Pos.y) * 0.5f,
-            (hand1Pos.z + hand2Pos.z) * 0.5f
-        )
-        val deltaX = currentMidpoint.x - session.initialMidpoint.x
-        val deltaY = currentMidpoint.y - session.initialMidpoint.y
-        val deltaZ = currentMidpoint.z - session.initialMidpoint.z
-
-        val newZ = (session.initialWindowPos.z + deltaZ).coerceIn(-4.0f, -0.4f)
-        window.position = Vector3(
-            session.initialWindowPos.x + deltaX,
-            session.initialWindowPos.y + deltaY,
-            newZ
-        )
-
-        // 3. Horizontal yaw angle adjustment with deadband (~1.5 deg) to eliminate depth chatter
-        val leftHand = if (session.isHand1Left) hand1Pos else hand2Pos
-        val rightHand = if (session.isHand1Left) hand2Pos else hand1Pos
-        val currentYawAngle = kotlin.math.atan2(
-            rightHand.z - leftHand.z,
-            rightHand.x - leftHand.x
-        )
-        val rawDeltaYaw = session.initialYawAngle - currentYawAngle
-        val yawDiff = rawDeltaYaw - session.lastAppliedDeltaYaw
-        val deltaYaw = if (kotlin.math.abs(yawDiff) < 0.026f) {
-            session.lastAppliedDeltaYaw
-        } else {
-            rawDeltaYaw.also { session.lastAppliedDeltaYaw = it }
-        }
-        val rotQ = Quaternion.fromAxisAngle(Vector3(0f, 1f, 0f), deltaYaw)
-        window.orientation = rotQ.multiply(session.initialOrientation)
+        // Orientation and position are strictly locked during corner pinch resize (no rotation or tilt)
+        window.orientation = session.initialOrientation
+        window.position = session.initialWindowPos
 
         val pixelW = Math.round(window.widthMeters * window.pixelsPerMeter)
         val pixelH = Math.round(window.heightMeters * window.pixelsPerMeter)
@@ -518,6 +502,200 @@ class SpatialWindowManager(
         }
         twoHandResizeSessions.remove(windowId)
     }
+
+    /**
+     * Side edge pinch grab gesture for horizontal rotation (yaw) or vertical tilt (pitch).
+     * Hand depth difference controls angle (max ±60 degrees); hand depth position controls window Z position.
+     */
+    fun startTwoHandEdgeRotation(
+        windowId: Int,
+        edgeAxis: TwoHandGestureType,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean {
+        val window = windows[windowId] ?: return false
+        if (window.isFullscreen) return false
+
+        val dx = hand2Pos.x - hand1Pos.x
+        val dy = hand2Pos.y - hand1Pos.y
+        val dz = hand2Pos.z - hand1Pos.z
+        val initialDistance = sqrt(dx * dx + dy * dy + dz * dz)
+
+        twoHandResizeSessions[windowId] = TwoHandResizeSession(
+            windowId = windowId,
+            initialDistance = initialDistance,
+            initialWidth = window.widthMeters,
+            initialHeight = window.heightMeters,
+            initialHand1Pos = hand1Pos,
+            initialHand2Pos = hand2Pos,
+            initialWindowPos = window.position,
+            initialOrientation = window.orientation,
+            gestureType = edgeAxis,
+            lastAppliedAngle = 0f,
+            lastAppliedScale = 1.0f
+        )
+        setFocusedWindow(windowId)
+        return true
+    }
+
+    fun updateTwoHandEdgeRotation(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean {
+        val session = twoHandResizeSessions[windowId] ?: return false
+        val window = windows[windowId] ?: return false
+
+        val maxAngleRad = (Math.PI / 3.0).toFloat() // ±60 degrees max from flat window
+
+        when (session.gestureType) {
+            TwoHandGestureType.HORIZONTAL_ROTATION -> {
+                // Left and right edges: horizontal rotation & projection into Z axis
+                val leftHand = if (hand1Pos.x <= hand2Pos.x) hand1Pos else hand2Pos
+                val rightHand = if (hand1Pos.x <= hand2Pos.x) hand2Pos else hand1Pos
+                val dx = (rightHand.x - leftHand.x).coerceAtLeast(0.05f)
+                val dz = rightHand.z - leftHand.z
+
+                // When right hand is deeper in Z (dz < 0), right side rotates back into Z
+                val rawYaw = kotlin.math.atan2(-dz, dx).coerceIn(-maxAngleRad, maxAngleRad)
+                val angleDiff = kotlin.math.abs(rawYaw - session.lastAppliedAngle)
+                val deltaYaw = if (angleDiff < 0.026f) {
+                    session.lastAppliedAngle
+                } else {
+                    rawYaw.also { session.lastAppliedAngle = it }
+                }
+
+                val rotQ = Quaternion.fromAxisAngle(Vector3(0f, 1f, 0f), deltaYaw)
+                window.orientation = rotQ.multiply(session.initialOrientation)
+
+                // Depth position of hands determines the Z positioning of the rotation
+                val midZ = ((leftHand.z + rightHand.z) * 0.5f).coerceIn(-4.0f, -0.4f)
+                window.position = Vector3(window.position.x, window.position.y, midZ)
+            }
+            TwoHandGestureType.VERTICAL_TILT -> {
+                // Top and bottom edges: vertical tilt & projection into Z axis
+                val topHand = if (hand1Pos.y >= hand2Pos.y) hand1Pos else hand2Pos
+                val bottomHand = if (hand1Pos.y >= hand2Pos.y) hand2Pos else hand1Pos
+                val dy = (topHand.y - bottomHand.y).coerceAtLeast(0.05f)
+                val dz = topHand.z - bottomHand.z
+
+                // When top hand is deeper in Z (dz < 0), top side rotates back into Z
+                val rawPitch = kotlin.math.atan2(dz, dy).coerceIn(-maxAngleRad, maxAngleRad)
+                val angleDiff = kotlin.math.abs(rawPitch - session.lastAppliedAngle)
+                val deltaPitch = if (angleDiff < 0.026f) {
+                    session.lastAppliedAngle
+                } else {
+                    rawPitch.also { session.lastAppliedAngle = it }
+                }
+
+                val rotQ = Quaternion.fromAxisAngle(Vector3(1f, 0f, 0f), deltaPitch)
+                window.orientation = rotQ.multiply(session.initialOrientation)
+
+                // Depth position of hands determines the Z positioning of the tilt
+                val midZ = ((topHand.z + bottomHand.z) * 0.5f).coerceIn(-4.0f, -0.4f)
+                window.position = Vector3(window.position.x, window.position.y, midZ)
+            }
+            TwoHandGestureType.CORNER_RESIZE -> {
+                return updateTwoHandDiagonalTransform(windowId, hand1Pos, hand2Pos)
+            }
+        }
+        return true
+    }
+
+    fun endTwoHandEdgeRotation(windowId: Int) {
+        endTwoHandDiagonalTransform(windowId)
+    }
+
+    fun toLocalPoint(worldPoint: Vector3, window: SpatialWindow): Vector3 {
+        val delta = Vector3(
+            worldPoint.x - window.position.x,
+            worldPoint.y - window.position.y,
+            worldPoint.z - window.position.z
+        )
+        return rotateVector(delta, window.orientation.conjugate())
+    }
+
+    fun classifyTwoHandTouchpoints(
+        window: SpatialWindow,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): TwoHandGestureType {
+        val p1 = toLocalPoint(hand1Pos, window)
+        val p2 = toLocalPoint(hand2Pos, window)
+
+        val corner1 = WindowInputInjector.getNearestResizeCorner(
+            p1.x, p1.y, window.widthMeters, window.heightMeters, toleranceMeters = 0.22f
+        )
+        val corner2 = WindowInputInjector.getNearestResizeCorner(
+            p2.x, p2.y, window.widthMeters, window.heightMeters, toleranceMeters = 0.22f
+        )
+
+        if (corner1 != null && corner2 != null) {
+            return TwoHandGestureType.CORNER_RESIZE
+        }
+
+        val edge1 = WindowInputInjector.getSideEdgeGrab(
+            p1.x, p1.y, window.widthMeters, window.heightMeters
+        )
+        val edge2 = WindowInputInjector.getSideEdgeGrab(
+            p2.x, p2.y, window.widthMeters, window.heightMeters
+        )
+
+        if ((edge1 == WindowInputInjector.WindowEdge.LEFT && edge2 == WindowInputInjector.WindowEdge.RIGHT) ||
+            (edge1 == WindowInputInjector.WindowEdge.RIGHT && edge2 == WindowInputInjector.WindowEdge.LEFT)) {
+            return TwoHandGestureType.HORIZONTAL_ROTATION
+        }
+
+        if ((edge1 == WindowInputInjector.WindowEdge.TOP && edge2 == WindowInputInjector.WindowEdge.BOTTOM) ||
+            (edge1 == WindowInputInjector.WindowEdge.BOTTOM && edge2 == WindowInputInjector.WindowEdge.TOP)) {
+            return TwoHandGestureType.VERTICAL_TILT
+        }
+
+        // Fallback: differentiate horizontal vs vertical vs diagonal by coordinate span
+        val dx = kotlin.math.abs(p1.x - p2.x)
+        val dy = kotlin.math.abs(p1.y - p2.y)
+        return when {
+            dx > 1.35f * dy -> TwoHandGestureType.HORIZONTAL_ROTATION
+            dy > 1.35f * dx -> TwoHandGestureType.VERTICAL_TILT
+            else -> TwoHandGestureType.CORNER_RESIZE
+        }
+    }
+
+    fun startTwoHandGesture(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): TwoHandGestureType? {
+        val window = windows[windowId] ?: return null
+        if (window.isFullscreen) return null
+
+        val gestureType = classifyTwoHandTouchpoints(window, hand1Pos, hand2Pos)
+        when (gestureType) {
+            TwoHandGestureType.CORNER_RESIZE -> startTwoHandDiagonalTransform(windowId, hand1Pos, hand2Pos)
+            TwoHandGestureType.HORIZONTAL_ROTATION,
+            TwoHandGestureType.VERTICAL_TILT -> startTwoHandEdgeRotation(windowId, gestureType, hand1Pos, hand2Pos)
+        }
+        return gestureType
+    }
+
+    fun updateTwoHandGesture(
+        windowId: Int,
+        hand1Pos: Vector3,
+        hand2Pos: Vector3
+    ): Boolean {
+        val session = twoHandResizeSessions[windowId] ?: return false
+        return when (session.gestureType) {
+            TwoHandGestureType.CORNER_RESIZE -> updateTwoHandDiagonalTransform(windowId, hand1Pos, hand2Pos)
+            TwoHandGestureType.HORIZONTAL_ROTATION,
+            TwoHandGestureType.VERTICAL_TILT -> updateTwoHandEdgeRotation(windowId, hand1Pos, hand2Pos)
+        }
+    }
+
+    fun endTwoHandGesture(windowId: Int) {
+        endTwoHandDiagonalTransform(windowId)
+    }
+
+    fun getActiveTwoHandSession(windowId: Int): TwoHandResizeSession? = twoHandResizeSessions[windowId]
 
     // Overloads for convenience / backward compatibility
     fun startTwoHandDiagonalResize(
@@ -570,11 +748,11 @@ class SpatialWindowManager(
     }
 
     /**
-     * Top grab bar 3D repositioning.
-     * Grabbing the top of the window moves it in 3D space (X, Y, Z).
-     * Moving it farther/closer dynamically resizes the window due to perspective.
+     * Window fist grab 3D repositioning.
+     * Grabbing a window by closing a fist moves it in 3D space (X, Y, Z) without rotation.
+     * Releasing the fist sets the final window position.
      */
-    fun startTopBarReposition(windowId: Int, handPos: Vector3): Boolean {
+    fun startWindowGrabReposition(windowId: Int, handPos: Vector3): Boolean {
         val window = windows[windowId] ?: return false
         if (window.isFullscreen) return false
 
@@ -589,7 +767,7 @@ class SpatialWindowManager(
         return true
     }
 
-    fun updateTopBarReposition(
+    fun updateWindowGrabReposition(
         windowId: Int,
         currentHandPos: Vector3,
         enablePerspectiveScaling: Boolean = true
@@ -597,7 +775,7 @@ class SpatialWindowManager(
         val session = repositionSessions[windowId] ?: return false
         val window = windows[windowId] ?: return false
 
-        // Compute 3D delta from hand movement
+        // Compute 3D delta from hand movement (X, Y, Z) - window rotation is strictly locked
         val deltaX = currentHandPos.x - session.grabStartHandPos.x
         val deltaY = currentHandPos.y - session.grabStartHandPos.y
         val deltaZ = currentHandPos.z - session.grabStartHandPos.z
@@ -610,7 +788,7 @@ class SpatialWindowManager(
             newZ
         )
 
-        // Perspective scaling: as window moves farther, scale physical dimensions
+        // Perspective scaling: as window moves farther/closer, scale physical dimensions
         // so apparent readability and angular scale stay proportional
         if (enablePerspectiveScaling) {
             val initialDist = Math.abs(session.initialWindowPos.z).coerceAtLeast(0.4f)
@@ -628,9 +806,15 @@ class SpatialWindowManager(
         return true
     }
 
-    fun endTopBarReposition(windowId: Int) {
+    fun endWindowGrabReposition(windowId: Int) {
         repositionSessions.remove(windowId)
     }
+
+    // Backward-compatible delegates for top bar repositioning API
+    fun startTopBarReposition(windowId: Int, handPos: Vector3): Boolean = startWindowGrabReposition(windowId, handPos)
+    fun updateTopBarReposition(windowId: Int, currentHandPos: Vector3, enablePerspectiveScaling: Boolean = true): Boolean =
+        updateWindowGrabReposition(windowId, currentHandPos, enablePerspectiveScaling)
+    fun endTopBarReposition(windowId: Int) = endWindowGrabReposition(windowId)
 
     fun rotateVector(v: Vector3, q: Quaternion): Vector3 {
         // v' = v + 2 * r x (r x v + w * v)
