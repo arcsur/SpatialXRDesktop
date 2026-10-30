@@ -210,7 +210,7 @@ class MediaPipeHandTracker(private val context: Context) {
     private data class HandCandidate(
         val handIndex: Int,
         val centerX: Float,
-        val rawCategoryIsLeft: Boolean,
+        val egocentricIsLeft: Boolean,
         val confidence: Float
     )
 
@@ -258,10 +258,15 @@ class MediaPipeHandTracker(private val context: Context) {
 
             val handednessCategory = handednesses.getOrNull(i)?.firstOrNull()
             val categoryName = handednessCategory?.categoryName() ?: "Right"
-            val rawIsLeft = categoryName.equals("Left", ignoreCase = true)
+            // MediaPipe was trained on front-facing selfie cameras with mirrored images.
+            // On unmirrored forward-facing AR glasses (outward-facing egocentric camera), MediaPipe's
+            // raw category label is inverted:
+            // MediaPipe "Left" (thumb on right) -> Egocentric Right
+            // MediaPipe "Right" (thumb on left) -> Egocentric Left
+            val egocentricIsLeft = categoryName.equals("Right", ignoreCase = true)
             val score = handednessCategory?.score() ?: 0.9f
 
-            candidates.add(HandCandidate(i, centerX, rawIsLeft, score))
+            candidates.add(HandCandidate(i, centerX, egocentricIsLeft, score))
         }
 
         var leftCandidate: HandCandidate? = null
@@ -275,7 +280,7 @@ class MediaPipeHandTracker(private val context: Context) {
                 cand.centerX > 0.58f -> false // Strongly in right half of user view
                 wasLeftTracked && !wasRightTracked -> true // Persistent left hand
                 wasRightTracked && !wasLeftTracked -> false // Persistent right hand
-                else -> cand.rawCategoryIsLeft
+                else -> cand.egocentricIsLeft // Egocentric inverted classifier
             }
             if (assignIsLeft) {
                 leftCandidate = cand

@@ -636,10 +636,15 @@ class SpatialStereoRenderer(
             canvas.drawText("⚡ 3D TWO-HAND TRANSFORM", midX, midY - 18f, textPaint)
         }
 
-        // 2. Individual Tracking Dots for Thumb and Forefinger per Hand
+        // 2. Individual Tracking Dots for Thumb and Forefinger per Hand with L/R Badges
         val hands = listOf(leftHandInfo, rightHandInfo)
         for (hand in hands) {
             if (!hand.isTracked) continue
+
+            val isLeft = (hand === leftHandInfo)
+            val handLabel = if (isLeft) "L" else "R"
+            val accentColor = if (isLeft) Color.parseColor("#FF00E5FF") else Color.parseColor("#FFFF9100") // Electric Cyan (L) vs Vivid Amber (R)
+            val badgeBgColor = Color.parseColor("#D00A0E17")
 
             val tpx = cx + (hand.thumbScreenX - 0.5f) * w
             val tpy = cy + (hand.thumbScreenY - 0.5f) * h
@@ -660,11 +665,28 @@ class SpatialStereoRenderer(
                 canvas.drawCircle(midPx, midPy, 15f, paint)
 
                 paint.style = Paint.Style.FILL
-                paint.color = Color.parseColor("#FFFF007F") // Vivid Magenta
+                paint.color = accentColor
                 canvas.drawCircle(midPx, midPy, 9f, paint)
 
                 paint.color = Color.WHITE
                 canvas.drawCircle(midPx, midPy, 4f, paint)
+
+                // L / R Badge above fused pinch reticle
+                val badgeY = midPy - 26f
+                paint.style = Paint.Style.FILL
+                paint.color = badgeBgColor
+                canvas.drawCircle(midPx, badgeY, 11f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 2f
+                paint.color = accentColor
+                canvas.drawCircle(midPx, badgeY, 11f, paint)
+
+                textPaint.textAlign = Paint.Align.CENTER
+                textPaint.textSize = 12f
+                textPaint.isFakeBoldText = true
+                textPaint.color = Color.WHITE
+                val textOffset = (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(handLabel, midPx, badgeY - textOffset, textPaint)
             } else if (dist < 0.045f) {
                 // PROXIMITY APPROACH: Magnetic attraction arc between thumb & forefinger
                 val closeness = ((0.045f - dist) / 0.025f).coerceIn(0f, 1f)
@@ -672,37 +694,106 @@ class SpatialStereoRenderer(
 
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 2.5f * closeness + 1f
-                paint.color = Color.argb(alpha, 0, 229, 255)
+                val r = Color.red(accentColor)
+                val g = Color.green(accentColor)
+                val b = Color.blue(accentColor)
+                paint.color = Color.argb(alpha, r, g, b)
                 canvas.drawLine(tpx, tpy, ipx, ipy, paint)
 
                 // Forefinger tip dot
                 paint.style = Paint.Style.FILL
-                paint.color = Color.parseColor("#FF00E5FF")
+                paint.color = accentColor
                 canvas.drawCircle(ipx, ipy, 7f, paint)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 1.5f
                 paint.color = Color.WHITE
                 canvas.drawCircle(ipx, ipy, 11f, paint)
 
+                // L / R Badge above forefinger tip dot
+                val fBadgeY = ipy - 22f
+                paint.style = Paint.Style.FILL
+                paint.color = badgeBgColor
+                canvas.drawCircle(ipx, fBadgeY, 9.5f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.8f
+                paint.color = accentColor
+                canvas.drawCircle(ipx, fBadgeY, 9.5f, paint)
+
+                textPaint.textAlign = Paint.Align.CENTER
+                textPaint.textSize = 11f
+                textPaint.isFakeBoldText = true
+                textPaint.color = Color.WHITE
+                val fTextOffset = (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(handLabel, ipx, fBadgeY - fTextOffset, textPaint)
+
                 // Thumb tip dot
                 paint.style = Paint.Style.FILL
                 paint.color = Color.WHITE
                 canvas.drawCircle(tpx, tpy, 6f, paint)
+
+                // Small L / R badge above thumb tip
+                val tBadgeY = tpy - 16f
+                paint.style = Paint.Style.FILL
+                paint.color = badgeBgColor
+                canvas.drawCircle(tpx, tBadgeY, 7.5f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.2f
+                paint.color = Color.argb(180, 255, 255, 255)
+                canvas.drawCircle(tpx, tBadgeY, 7.5f, paint)
+
+                textPaint.textSize = 8.5f
+                textPaint.isFakeBoldText = true
+                textPaint.color = Color.WHITE
+                val tTextOffset = (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(handLabel, tpx, tBadgeY - tTextOffset, textPaint)
             } else {
                 // OPEN HAND: Distinct tracking dots for thumb and forefinger
-                // Forefinger tip dot (Cyan precision aim dot)
+                // Forefinger tip dot (Precision aim dot)
                 paint.style = Paint.Style.FILL
-                paint.color = Color.parseColor("#FF00E5FF")
+                paint.color = accentColor
                 canvas.drawCircle(ipx, ipy, 6.5f, paint)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 1.5f
                 paint.color = Color.argb(180, 255, 255, 255)
                 canvas.drawCircle(ipx, ipy, 10f, paint)
 
+                // L / R Badge above forefinger tip dot
+                val fBadgeY = ipy - 20f
+                paint.style = Paint.Style.FILL
+                paint.color = badgeBgColor
+                canvas.drawCircle(ipx, fBadgeY, 9.5f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.8f
+                paint.color = accentColor
+                canvas.drawCircle(ipx, fBadgeY, 9.5f, paint)
+
+                textPaint.textAlign = Paint.Align.CENTER
+                textPaint.textSize = 11f
+                textPaint.isFakeBoldText = true
+                textPaint.color = Color.WHITE
+                val fTextOffset = (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(handLabel, ipx, fBadgeY - fTextOffset, textPaint)
+
                 // Thumb tip dot (Soft white anchor dot)
                 paint.style = Paint.Style.FILL
                 paint.color = Color.argb(200, 255, 255, 255)
                 canvas.drawCircle(tpx, tpy, 5f, paint)
+
+                // Small L / R badge above thumb tip
+                val tBadgeY = tpy - 15f
+                paint.style = Paint.Style.FILL
+                paint.color = badgeBgColor
+                canvas.drawCircle(tpx, tBadgeY, 7.5f, paint)
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 1.2f
+                paint.color = Color.argb(160, 255, 255, 255)
+                canvas.drawCircle(tpx, tBadgeY, 7.5f, paint)
+
+                textPaint.textSize = 8.5f
+                textPaint.isFakeBoldText = true
+                textPaint.color = Color.argb(220, 255, 255, 255)
+                val tTextOffset = (textPaint.descent() + textPaint.ascent()) / 2f
+                canvas.drawText(handLabel, tpx, tBadgeY - tTextOffset, textPaint)
             }
 
             // Subtle aiming reticle on workspace focal plane
@@ -710,7 +801,10 @@ class SpatialStereoRenderer(
             val apy = cy + (hand.aimScreenY - 0.5f) * h
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1.5f
-            paint.color = Color.argb(90, 0, 229, 255)
+            val r = Color.red(accentColor)
+            val g = Color.green(accentColor)
+            val b = Color.blue(accentColor)
+            paint.color = Color.argb(90, r, g, b)
             canvas.drawCircle(apx, apy, 8f, paint)
         }
     }
@@ -718,8 +812,11 @@ class SpatialStereoRenderer(
     private fun drawHudHeader(canvas: Canvas, ox: Float, oy: Float, w: Float, h: Float, eyeName: String) {
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.textSize = 15f
+        textPaint.isFakeBoldText = false
         textPaint.color = Color.parseColor("#9000E5FF")
-        val handInfo = if (isHandsTracked) "🖐️ HANDS: ACTIVE" else "🖐️ OPTICAL TRACKING: ON"
+        val lStatus = if (leftHandInfo.isTracked) (if (leftHandInfo.isPinching) "L:🤏" else "L:🖐️") else "L:--"
+        val rStatus = if (rightHandInfo.isTracked) (if (rightHandInfo.isPinching) "R:🤏" else "R:🖐️") else "R:--"
+        val handInfo = if (isHandsTracked) "🖐️ [$lStatus  $rStatus]" else "🖐️ OPTICAL TRACKING: ON"
         val pinchInfo = if (isPinching) " • 🤏 PINCH" else ""
         canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo", ox + 24f, oy + 32f, textPaint)
 

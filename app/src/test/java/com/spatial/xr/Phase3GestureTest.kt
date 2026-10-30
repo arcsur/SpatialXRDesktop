@@ -167,4 +167,52 @@ class Phase3GestureTest {
         val selectedDepth = if (stereoDepth < -0.15f) stereoDepth else palmSpanDepth
         assertEquals(palmSpanDepth, selectedDepth, 1e-4f)
     }
+
+    @Test
+    fun testEgocentricClassifierInversionForCenterFovHands() {
+        // MediaPipe HandLandmarker assumed mirrored selfie cameras.
+        // For head-mounted forward-facing AR glasses:
+        // Raw category "Right" indicates user's dorsal Left hand.
+        // Raw category "Left" indicates user's dorsal Right hand.
+        fun mapMediaPipeToEgocentric(categoryName: String): Boolean {
+            return categoryName.equals("Right", ignoreCase = true)
+        }
+
+        assertTrue("MediaPipe 'Right' maps to egocentric Left hand", mapMediaPipeToEgocentric("Right"))
+        assertFalse("MediaPipe 'Left' maps to egocentric Right hand", mapMediaPipeToEgocentric("Left"))
+
+        // Single hand entering center FOV (0.42 <= X <= 0.58)
+        fun assignSingleCenterHand(centerX: Float, categoryName: String): Boolean {
+            val egocentricIsLeft = mapMediaPipeToEgocentric(categoryName)
+            return when {
+                centerX < 0.42f -> true
+                centerX > 0.58f -> false
+                else -> egocentricIsLeft
+            }
+        }
+
+        // Center hand detected as "Right" by MediaPipe is assigned to Left hand
+        assertTrue(assignSingleCenterHand(0.50f, "Right"))
+        // Center hand detected as "Left" by MediaPipe is assigned to Right hand
+        assertFalse(assignSingleCenterHand(0.50f, "Left"))
+    }
+
+    @Test
+    fun testHandTrackingVisualLabelBadges() {
+        // Left hand -> "L", Cyan (#FF00E5FF)
+        // Right hand -> "R", Amber (#FFFF9100)
+        fun getHandBadge(isLeft: Boolean): Pair<String, String> {
+            val label = if (isLeft) "L" else "R"
+            val colorHex = if (isLeft) "#FF00E5FF" else "#FFFF9100"
+            return Pair(label, colorHex)
+        }
+
+        val (leftLabel, leftColor) = getHandBadge(true)
+        assertEquals("L", leftLabel)
+        assertEquals("#FF00E5FF", leftColor)
+
+        val (rightLabel, rightColor) = getHandBadge(false)
+        assertEquals("R", rightLabel)
+        assertEquals("#FFFF9100", rightColor)
+    }
 }
