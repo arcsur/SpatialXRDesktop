@@ -76,4 +76,17 @@ bool VitureDevice::setBrightness(uint8_t level) {
     return (transferred >= 0);
 }
 
+bool VitureDevice::setElectrochromicFilm(bool enabled) {
+    auto packet = ViturePacket::createElectrochromicFilmPacket(enabled);
+    if (!transport_) {
+        return true;
+    }
+
+    int transferred = transport_->controlTransfer(
+        0x21, 0x09, 0x0300, 0x00,
+        packet.data, sizeof(packet.data), 500
+    );
+    return (transferred >= 0);
+}
+
 } // namespace spatial::hardware

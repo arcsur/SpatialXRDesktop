@@ -3,6 +3,7 @@
 
 // Forward declarations of phase test functions
 void testViture3DSBSToggle();
+void testVitureElectrochromicFilmToggle();
 void testVulkanCompositorViewports();
 void testMultiviewAndQuadRenderer();
 
@@ -28,6 +29,7 @@ int main() {
 
     std::cout << "--- [Phase 1: Display & Swapchain] ---\n";
     testViture3DSBSToggle();
+    testVitureElectrochromicFilmToggle();
     testVulkanCompositorViewports();
     testMultiviewAndQuadRenderer();
 

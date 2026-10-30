@@ -51,6 +51,12 @@ class SpatialStereoRenderer(
     @Volatile
     var isHandsTracked: Boolean = false
 
+    @Volatile
+    var isBackgroundVisible: Boolean = true
+
+    @Volatile
+    var isGestureVisualsEnabled: Boolean = true
+
     data class HandRenderInfo(
         var isTracked: Boolean = false,
         var thumbScreenX: Float = 0.5f,
@@ -264,8 +270,12 @@ class SpatialStereoRenderer(
         val totalH = canvas.height
         if (totalW <= 0 || totalH <= 0) return
 
-        // Clear background
-        canvas.drawColor(Color.parseColor("#080B18"))
+        // Clear background: solid black for transparent see-through OLED in AR mode
+        if (isBackgroundVisible) {
+            canvas.drawColor(Color.parseColor("#080B18"))
+        } else {
+            canvas.drawColor(Color.BLACK)
+        }
 
         if (isStereoSideBySide) {
             val eyeW = totalW / 2
@@ -286,10 +296,12 @@ class SpatialStereoRenderer(
             renderEyeView(canvas, 0f, 0f, eyeW.toFloat(), eyeH.toFloat(), ipdOffset = 10f, eyeName = "RIGHT EYE")
             canvas.restore()
 
-            // Draw center dividing divider line for SBS calibration
-            paint.color = Color.parseColor("#30FFFFFF")
-            paint.strokeWidth = 2f
-            canvas.drawLine(eyeW.toFloat(), 0f, eyeW.toFloat(), eyeH.toFloat(), paint)
+            // Draw center dividing divider line for SBS calibration only in VR mode
+            if (isBackgroundVisible) {
+                paint.color = Color.parseColor("#30FFFFFF")
+                paint.strokeWidth = 2f
+                canvas.drawLine(eyeW.toFloat(), 0f, eyeW.toFloat(), eyeH.toFloat(), paint)
+            }
         } else {
             // Monoscopic 2D output
             currentViewportW = totalW.toFloat()
@@ -311,10 +323,14 @@ class SpatialStereoRenderer(
         val cy = oy + h * 0.5f
 
         // 1. Draw 3D Perspective Floor Grid
-        drawPerspectiveFloor(canvas, cx, cy, w, h)
+        if (isBackgroundVisible) {
+            drawPerspectiveFloor(canvas, cx, cy, w, h)
+        }
 
         // 2. Draw Center Crosshair Alignment Reticle
-        drawCenterReticle(canvas, cx, cy)
+        if (isBackgroundVisible) {
+            drawCenterReticle(canvas, cx, cy)
+        }
 
         // 3. Draw Spatial Windows
         drawSpatialWindows(canvas, cx, cy, w, h, ipdOffset)
@@ -332,7 +348,9 @@ class SpatialStereoRenderer(
         }
 
         // 6. Draw HUD Info Header
-        drawHudHeader(canvas, ox, oy, w, h, eyeName)
+        if (isBackgroundVisible) {
+            drawHudHeader(canvas, ox, oy, w, h, eyeName)
+        }
     }
 
     private fun drawPerspectiveFloor(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float) {
@@ -469,52 +487,54 @@ class SpatialStereoRenderer(
             }
             canvas.drawPath(windowPath, paint)
 
-            // Diagonal corner-to-corner stretch guideline (Iron Man gesture)
-            paint.strokeWidth = 1.5f
-            paint.color = Color.parseColor("#80FF007F")
-            paint.pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
-            canvas.drawLine(pTL.first, pTL.second, pBR.first, pBR.second, paint)
-            paint.pathEffect = null
+            if (isGestureVisualsEnabled) {
+                // Diagonal corner-to-corner stretch guideline (Iron Man gesture)
+                paint.strokeWidth = 1.5f
+                paint.color = Color.parseColor("#80FF007F")
+                paint.pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                canvas.drawLine(pTL.first, pTL.second, pBR.first, pBR.second, paint)
+                paint.pathEffect = null
 
-            // 4 Glowing Corner Grab Handles with generous snap rings
-            val cornerList = listOf(
-                Pair(SpatialWindowManager.ResizeCorner.TOP_LEFT, pTL),
-                Pair(SpatialWindowManager.ResizeCorner.TOP_RIGHT, pTR),
-                Pair(SpatialWindowManager.ResizeCorner.BOTTOM_LEFT, pBL),
-                Pair(SpatialWindowManager.ResizeCorner.BOTTOM_RIGHT, pBR)
-            )
-            for ((cornerEnum, pt) in cornerList) {
-                val (cornerX, cornerY) = pt
-                val isHovered = (isWinHovered && hoveredResizeCorner == cornerEnum) ||
-                        (isWinActive && singleHandResizeActive && activeResizeCorner == cornerEnum)
-                val baseRadius = if (isHovered) 13f else 8f
-                val ringRadius = if (isHovered) 18f else 11f
+                // 4 Glowing Corner Grab Handles with generous snap rings
+                val cornerList = listOf(
+                    Pair(SpatialWindowManager.ResizeCorner.TOP_LEFT, pTL),
+                    Pair(SpatialWindowManager.ResizeCorner.TOP_RIGHT, pTR),
+                    Pair(SpatialWindowManager.ResizeCorner.BOTTOM_LEFT, pBL),
+                    Pair(SpatialWindowManager.ResizeCorner.BOTTOM_RIGHT, pBR)
+                )
+                for ((cornerEnum, pt) in cornerList) {
+                    val (cornerX, cornerY) = pt
+                    val isHovered = (isWinHovered && hoveredResizeCorner == cornerEnum) ||
+                            (isWinActive && singleHandResizeActive && activeResizeCorner == cornerEnum)
+                    val baseRadius = if (isHovered) 13f else 8f
+                    val ringRadius = if (isHovered) 18f else 11f
 
+                    paint.style = Paint.Style.FILL
+                    paint.color = if (isHovered) Color.parseColor("#FF00E5FF") else Color.parseColor("#FFFFD700") // Cyan when hovered, Gold otherwise
+                    canvas.drawCircle(cornerX, cornerY, baseRadius, paint)
+
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = if (isHovered) 3f else 2f
+                    paint.color = Color.WHITE
+                    canvas.drawCircle(cornerX, cornerY, ringRadius, paint)
+
+                    // Outer proximity tolerance ring
+                    paint.strokeWidth = 1f
+                    paint.color = if (isHovered) Color.argb(120, 0, 229, 255) else Color.argb(40, 255, 255, 255)
+                    canvas.drawCircle(cornerX, cornerY, ringRadius + 10f, paint)
+                }
+
+                // Two-hand corner pinch indicators
                 paint.style = Paint.Style.FILL
-                paint.color = if (isHovered) Color.parseColor("#FF00E5FF") else Color.parseColor("#FFFFD700") // Cyan when hovered, Gold otherwise
-                canvas.drawCircle(cornerX, cornerY, baseRadius, paint)
-
+                paint.color = Color.parseColor("#E0FF007F")
+                canvas.drawCircle(pTL.first, pTL.second, 14f, paint)
+                canvas.drawCircle(pBR.first, pBR.second, 14f, paint)
                 paint.style = Paint.Style.STROKE
-                paint.strokeWidth = if (isHovered) 3f else 2f
                 paint.color = Color.WHITE
-                canvas.drawCircle(cornerX, cornerY, ringRadius, paint)
-
-                // Outer proximity tolerance ring
-                paint.strokeWidth = 1f
-                paint.color = if (isHovered) Color.argb(120, 0, 229, 255) else Color.argb(40, 255, 255, 255)
-                canvas.drawCircle(cornerX, cornerY, ringRadius + 10f, paint)
+                paint.strokeWidth = 2.5f
+                canvas.drawCircle(pTL.first, pTL.second, 14f, paint)
+                canvas.drawCircle(pBR.first, pBR.second, 14f, paint)
             }
-
-            // Two-hand corner pinch indicators
-            paint.style = Paint.Style.FILL
-            paint.color = Color.parseColor("#E0FF007F")
-            canvas.drawCircle(pTL.first, pTL.second, 14f, paint)
-            canvas.drawCircle(pBR.first, pBR.second, 14f, paint)
-            paint.style = Paint.Style.STROKE
-            paint.color = Color.WHITE
-            paint.strokeWidth = 2.5f
-            canvas.drawCircle(pTL.first, pTL.second, 14f, paint)
-            canvas.drawCircle(pBR.first, pBR.second, 14f, paint)
 
             // Holographic Window Content
             textPaint.textSize = 24f
@@ -529,9 +549,11 @@ class SpatialStereoRenderer(
                 winCy + 15f,
                 textPaint
             )
-            textPaint.textSize = 16f
-            textPaint.color = Color.parseColor("#80FFFFFF")
-            canvas.drawText("Pinch corners with 2 hands to resize & angle in 3D", winCx, winCy + 42f, textPaint)
+            if (isGestureVisualsEnabled) {
+                textPaint.textSize = 16f
+                textPaint.color = Color.parseColor("#80FFFFFF")
+                canvas.drawText("Pinch corners with 2 hands to resize & angle in 3D", winCx, winCy + 42f, textPaint)
+            }
         }
     }
 
@@ -629,8 +651,8 @@ class SpatialStereoRenderer(
     }
 
     private fun drawHandTrackingVisuals(canvas: Canvas, cx: Float, cy: Float, w: Float, h: Float) {
-        // 1. Two-Hand 3D Transformation Beam (Iron Man Gesture)
-        if (leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) {
+        // 1. Two-Hand 3D Transformation Beam (Iron Man Gesture) - only when gesture visuals enabled
+        if (isGestureVisualsEnabled && leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) {
             val lpx = cx + (leftHandInfo.indexScreenX - 0.5f) * w
             val lpy = cy + (leftHandInfo.indexScreenY - 0.5f) * h
             val rpx = cx + (rightHandInfo.indexScreenX - 0.5f) * w
@@ -653,7 +675,7 @@ class SpatialStereoRenderer(
             canvas.drawText("⚡ 3D TWO-HAND TRANSFORM", midX, midY - 18f, textPaint)
         }
 
-        // 2. Individual Tracking Dots for Thumb and Forefinger per Hand with L/R Badges
+        // 2. Individual Tracking Dots for Thumb and Forefinger per Hand
         val hands = listOf(leftHandInfo, rightHandInfo)
         for (hand in hands) {
             if (!hand.isTracked) continue
@@ -669,6 +691,32 @@ class SpatialStereoRenderer(
             val ipy = cy + (hand.indexScreenY - 0.5f) * h
 
             val dist = hand.pinchDistanceMeters
+
+            // When gesture visuals are disabled: minimally distracting functional dots
+            if (!isGestureVisualsEnabled) {
+                if (hand.isPinching || dist < 0.020f) {
+                    val midPx = (tpx + ipx) * 0.5f
+                    val midPy = (tpy + ipy) * 0.5f
+                    paint.style = Paint.Style.FILL
+                    paint.color = accentColor
+                    canvas.drawCircle(midPx, midPy, 6f, paint)
+                    paint.color = Color.WHITE
+                    canvas.drawCircle(midPx, midPy, 2.5f, paint)
+                } else {
+                    paint.style = Paint.Style.FILL
+                    paint.color = accentColor
+                    canvas.drawCircle(ipx, ipy, 5f, paint)
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = 1f
+                    paint.color = Color.WHITE
+                    canvas.drawCircle(ipx, ipy, 5f, paint)
+
+                    paint.style = Paint.Style.FILL
+                    paint.color = Color.WHITE
+                    canvas.drawCircle(tpx, tpy, 4f, paint)
+                }
+                continue
+            }
 
             if (hand.isPinching || dist < 0.020f) {
                 // PINCHED: Dots magnetically fuse into a single glowing pinch reticle

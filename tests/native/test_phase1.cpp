@@ -91,6 +91,30 @@ void testViture3DSBSToggle() {
     std::cout << "[PASS] testViture3DSBSToggle\n";
 }
 
+void testVitureElectrochromicFilmToggle() {
+    auto mockTransport = std::make_shared<MockUsbTransport>();
+    VitureDevice device(mockTransport);
+
+    assert(device.initialize());
+
+    // Enable electrochromic tint (dimmed/VR mode)
+    bool ok = device.setElectrochromicFilm(true);
+    assert(ok);
+    assert(mockTransport->lastSentData.size() == VITURE_PACKET_SIZE);
+    assert(mockTransport->lastSentData[0] == 0x00);
+    assert(mockTransport->lastSentData[1] == 0xA3);
+    assert(mockTransport->lastSentData[2] == 0x01);
+    assert(mockTransport->lastSentData[3] == 0x01); // Tinted ON
+
+    // Disable electrochromic tint (clear/AR mode)
+    ok = device.setElectrochromicFilm(false);
+    assert(ok);
+    assert(mockTransport->lastSentData[3] == 0x00); // Tinted OFF (Clear)
+
+    device.disconnect();
+    std::cout << "[PASS] testVitureElectrochromicFilmToggle\n";
+}
+
 void testVulkanCompositorViewports() {
     VulkanCompositor compositor;
     assert(compositor.initialize(nullptr));

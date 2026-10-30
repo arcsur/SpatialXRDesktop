@@ -40,6 +40,15 @@ struct ViturePacket {
         packet.data[3] = (brightnessLevel > 7) ? 7 : brightnessLevel;
         return packet;
     }
+
+    static ViturePacket createElectrochromicFilmPacket(bool enabled) {
+        ViturePacket packet{};
+        packet.data[0] = 0x00;
+        packet.data[1] = 0xA3;
+        packet.data[2] = 0x01;
+        packet.data[3] = enabled ? 0x01 : 0x00;
+        return packet;
+    }
 };
 
 class IUsbTransport {
@@ -69,6 +78,7 @@ public:
 
     bool set3DMode(Display3DMode mode);
     bool setBrightness(uint8_t level);
+    bool setElectrochromicFilm(bool enabled);
     Display3DMode getCurrentMode() const { return currentMode_; }
 
     void setTransport(std::shared_ptr<IUsbTransport> transport) {

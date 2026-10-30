@@ -62,6 +62,12 @@ class MainActivity : AppCompatActivity(),
     private var dockButton: Button? = null
     private var stereoButton: Button? = null
     private var pocketModeButton: Button? = null
+    private var modeToggleButton: Button? = null
+    private var gestureVisualsButton: Button? = null
+
+    // Display & Gesture options
+    private var isFloatingArMode = false
+    private var isGestureVisualsEnabled = true
 
     // Touchpad tracking variables
     private var initialPinchDist = 0f
@@ -241,6 +247,39 @@ class MainActivity : AppCompatActivity(),
         secondaryButtonRow.addView(tutorialButton)
         rootLayout.addView(secondaryButtonRow)
 
+        // Display & Gesture Options Row
+        val displayOptionsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, 24)
+        }
+
+        modeToggleButton = Button(this).apply {
+            text = "🌌 Mode: VR"
+            setBackgroundColor(Color.parseColor("#1A237E"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = 12
+            }
+            setOnClickListener {
+                toggleArVrMode()
+            }
+        }
+        displayOptionsRow.addView(modeToggleButton)
+
+        gestureVisualsButton = Button(this).apply {
+            text = "🖐️ Visuals: Full"
+            setBackgroundColor(Color.parseColor("#311B92"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = 12
+            }
+            setOnClickListener {
+                toggleGestureVisuals()
+            }
+        }
+        displayOptionsRow.addView(gestureVisualsButton)
+        rootLayout.addView(displayOptionsRow)
+
         // Utility Controls: Pocket Mode / Screen Off
         val utilityButtonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -308,6 +347,7 @@ class MainActivity : AppCompatActivity(),
         rootLayout.addView(touchpadView)
 
         setContentView(rootLayout)
+        applyDisplayOptions()
     }
 
     private fun handleTouchpadEvent(view: View, event: MotionEvent) {
@@ -380,6 +420,61 @@ class MainActivity : AppCompatActivity(),
             stereoButton?.text = "↔️ Mode: 2D Mono"
             NativeBridge.nativeSet3DMode(false)
             Toast.makeText(this, "2D Monoscopic Mode Enabled", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toggleArVrMode() {
+        isFloatingArMode = !isFloatingArMode
+        applyDisplayOptions()
+        val modeMsg = if (isFloatingArMode) {
+            "✨ Floating AR Mode Active (Black OLED Background • Electrochromic Shade OFF)"
+        } else {
+            "🌌 Immersive VR Mode Active (Dark Background • Electrochromic Shade ON)"
+        }
+        Toast.makeText(this, modeMsg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleGestureVisuals() {
+        isGestureVisualsEnabled = !isGestureVisualsEnabled
+        applyDisplayOptions()
+        val visMsg = if (isGestureVisualsEnabled) {
+            "🖐️ Gesture Visuals: FULL (Window Handles & Scaling Lines ON)"
+        } else {
+            "🎯 Gesture Visuals: MINIMAL (Handles & Lines OFF • Minimal Dots)"
+        }
+        Toast.makeText(this, visMsg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun applyDisplayOptions() {
+        // 1. Update Mode Button (VR vs AR)
+        if (isFloatingArMode) {
+            modeToggleButton?.text = "✨ Mode: AR"
+            modeToggleButton?.setBackgroundColor(Color.parseColor("#004D40"))
+            modeToggleButton?.setTextColor(Color.parseColor("#00E5FF"))
+        } else {
+            modeToggleButton?.text = "🌌 Mode: VR"
+            modeToggleButton?.setBackgroundColor(Color.parseColor("#1A237E"))
+            modeToggleButton?.setTextColor(Color.WHITE)
+        }
+
+        // 2. Update Gesture Visuals Button (Full vs Minimal)
+        if (isGestureVisualsEnabled) {
+            gestureVisualsButton?.text = "🖐️ Visuals: Full"
+            gestureVisualsButton?.setBackgroundColor(Color.parseColor("#311B92"))
+            gestureVisualsButton?.setTextColor(Color.WHITE)
+        } else {
+            gestureVisualsButton?.text = "🎯 Visuals: Minimal"
+            gestureVisualsButton?.setBackgroundColor(Color.parseColor("#263238"))
+            gestureVisualsButton?.setTextColor(Color.parseColor("#B0BEC5"))
+        }
+
+        // 3. Hardware Electrochromic Shade: enabled (1.0f) in VR, disabled (0.0f) in AR
+        NativeBridge.nativeSetElectrochromicFilm(!isFloatingArMode)
+
+        // 4. Update Renderer display options if active
+        presentationManager.getRenderer()?.let { renderer ->
+            renderer.isBackgroundVisible = !isFloatingArMode
+            renderer.isGestureVisualsEnabled = isGestureVisualsEnabled
         }
     }
 
@@ -495,6 +590,7 @@ class MainActivity : AppCompatActivity(),
     override fun onSurfaceCreated(holder: SurfaceHolder) {
         NativeBridge.nativeInitCompositor(holder.surface)
         NativeBridge.nativeSet3DMode(true)
+        applyDisplayOptions()
         runOnUiThread {
             statusTextView?.append("\n✅ 3D SBS Compositor Active (60 FPS)")
         }

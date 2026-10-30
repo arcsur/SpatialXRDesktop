@@ -73,13 +73,13 @@ class PresentationManager(
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {
-            callback?.onSurfaceCreated(holder)
             if (windowManager != null && launcherRepository != null) {
                 renderer?.stopRendering()
                 renderer = SpatialStereoRenderer(context, holder, windowManager, launcherRepository).apply {
                     start()
                 }
             }
+            callback?.onSurfaceCreated(holder)
         }
 
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {

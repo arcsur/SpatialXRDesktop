@@ -22,4 +22,12 @@ class Phase1DisplayTest {
         // Assert that NativeBridge can be accessed and reports library status
         assertFalse(NativeBridge.isNativeLoaded()) // In host JVM unit tests, .so is not loaded
     }
+
+    @Test
+    fun testElectrochromicFilmMethodContract() {
+        // Verify nativeSetElectrochromicFilm method exists on NativeBridge
+        val method = NativeBridge::class.java.getMethod("nativeSetElectrochromicFilm", Boolean::class.javaPrimitiveType)
+        org.junit.Assert.assertNotNull(method)
+        assertEquals(Boolean::class.javaPrimitiveType, method.returnType)
+    }
 }

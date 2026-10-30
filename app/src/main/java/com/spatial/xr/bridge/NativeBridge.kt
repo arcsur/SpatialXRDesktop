@@ -25,6 +25,7 @@ object NativeBridge {
     external fun nativeInitCompositor(surface: Surface): Boolean
     external fun nativeShutdownCompositor()
     external fun nativeSet3DMode(enabled: Boolean): Boolean
+    external fun nativeSetElectrochromicFilm(enabled: Boolean): Boolean
     external fun nativeRenderCalibrationPattern()
 
     // Phase 2: 6DoF Pose & Sensor Fusion

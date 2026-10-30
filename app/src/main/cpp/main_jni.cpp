@@ -182,6 +182,18 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeSet3DMode(JNIEnv* /*env*/, jobject
     return gVitureDevice->set3DMode(mode) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeSetElectrochromicFilm(JNIEnv* /*env*/, jobject /*thiz*/, jboolean enabled) {
+    if (gVitureHandle) {
+        xr_device_provider_set_film_mode(gVitureHandle, enabled ? 1.0f : 0.0f);
+    }
+    if (!gVitureDevice) {
+        gVitureDevice = std::make_unique<spatial::hardware::VitureDevice>();
+        gVitureDevice->initialize();
+    }
+    return gVitureDevice->setElectrochromicFilm(enabled ? true : false) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeRenderCalibrationPattern(JNIEnv* /*env*/, jobject /*thiz*/) {
     if (gCompositor) {

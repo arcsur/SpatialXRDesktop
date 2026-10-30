@@ -4,6 +4,7 @@
 - **Never detach presentation displays on `onPause()`**: System dialogs (e.g., USB permissions, runtime dialogs) pause the activity. Calling `presentationManager.detachDisplay()` in `onPause()` causes screen blanking in the glasses. Only detach displays in `onDestroy()` or when `DisplayListener.onDisplayRemoved()` fires.
 - **Maintain active SurfaceView rendering**: External XR displays require an active hardware canvas render thread (`lockHardwareCanvas()`) at 60 FPS. Idle presentation surfaces risk being marked as `mSleeping=true` by SurfaceFlinger.
 - **Decouple Compositor Lifecycle from Hardware Streaming**: Display mode toggles (2D to 3D SBS) re-enumerate the presentation surface. `nativeShutdownCompositor()` must NEVER stop `gVitureHandle`, `CarinaDeviceProvider`, or camera stream threads; hardware handles belong strictly to the physical USB connection lifecycle.
+- **Renderer Initialization Sequence in Presentation**: In `Presentation.surfaceCreated()`, always instantiate and start `SpatialStereoRenderer` *before* invoking `callback.onSurfaceCreated()`. This ensures the controller deck receives an active renderer reference to push initial display options (e.g. AR/VR and gesture HUD states) synchronously.
 
 ## 2. Android 14+ (API 34) USB Host Security
 - **Explicit PendingIntents for USB permissions**: When using `PendingIntent.FLAG_MUTABLE` with `UsbManager.requestPermission()`, always set the explicit package:
@@ -50,6 +51,10 @@
 ## 9. Spatial Window Manipulation & Gesture Interactions
 - **Fist-Grab 3D Repositioning State Machine**: Window repositioning via fist grab must enforce an open-hand prerequisite. The grab session triggers strictly when transitioning from an open hand positioned over the target window quad to a closed fist on the same hand. Re-entering FOV as a fist or sweeping a closed fist across a window must never initiate a grab.
 - **Orientation Lock during Translation**: 3D fist grab translates windows freely in $X, Y, \text{and } Z$ dimensions while strictly locking the window orientation quaternion. Angular rotations are reserved exclusively for deliberate two-hand transforms.
+
+## 10. Optical See-Through AR vs. Immersive VR Display Modes
+- **Coupled Electrochromic Dimming & Additive OLED Transparency**: Micro-OLED displays are additive; pure black (`#000000`) emits zero light and is 100% optically transparent in glasses. When switching to Floating AR mode, always synchronize clearing the canvas to `#000000` with setting physical electrochromic lens voltage to `0.0f` (clear) and suppressing floor grids, reticles, and HUD chrome. In VR mode, couple dark background fill (`#080B18`) with `1.0f` lens dimming (opaque).
+- **Decoupled Gesture Visualization Scaffold**: Window handles, corner tolerance rings, diagonal stretch guidelines, and two-hand transform beams must be decoupled from spatial interaction and toggleable via a dedicated gesture visualization control. When disabled, remove all corner handles and scaling lines, and reduce hand tracking to minimal solid dots (5px fingertip dot, 4px thumb dot, 6px pinch dot) without text badges or halos, preserving user positional awareness with zero real-world occlusion.
 
 
 
