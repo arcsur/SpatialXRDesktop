@@ -423,6 +423,22 @@ Java_com_spatial_xr_bridge_NativeBridge_nativeIsLookingAtPalm(JNIEnv* /*env*/, j
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeIsThumbFacingViewpoint(
+    JNIEnv* /*env*/, jobject /*thiz*/, jboolean isLeft
+) {
+    auto* tracker = getOrCreateHandTracker();
+    return tracker->isThumbFacingViewpoint(isLeft) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_spatial_xr_bridge_NativeBridge_nativeDetectTwoHandClaspClose(
+    JNIEnv* /*env*/, jobject /*thiz*/, jboolean primaryIsLeft, jfloat maxDistanceMeters
+) {
+    auto* tracker = getOrCreateHandTracker();
+    return tracker->detectTwoHandClaspClose(primaryIsLeft, maxDistanceMeters) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_spatial_xr_bridge_NativeBridge_nativeGetTwoHandTransform(
     JNIEnv* env, jobject /*thiz*/,
     jfloatArray initLeftPos, jfloatArray initRightPos,

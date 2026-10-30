@@ -50,6 +50,15 @@
 ## 9. Spatial Window Manipulation & Gesture Interactions
 - **Fist-Grab 3D Repositioning State Machine**: Window repositioning via fist grab must enforce an open-hand prerequisite. The grab session triggers strictly when transitioning from an open hand positioned over the target window quad to a closed fist on the same hand. Re-entering FOV as a fist or sweeping a closed fist across a window must never initiate a grab.
 - **Orientation Lock during Translation**: 3D fist grab translates windows freely in $X, Y, \text{and } Z$ dimensions while strictly locking the window orientation quaternion. Angular rotations are reserved exclusively for deliberate two-hand transforms.
+- **Top-Edge Grab Hit Detection**: The visual top grab bar is removed. Fist-grab repositioning must track based strictly on aiming or placing the hand over the top edge of the window (`WindowInputInjector.isTopGrabBarHitWithSlack` with top ~16cm thickness and ~20cm slack), never the entire window quad. Grabbing the window center or bottom must be rejected to keep app content interactive for touch and laser pointer injection.
+- **Two-Hand Clasp Window-Close State Machine**:
+  - **Prerequisite**: Exactly one hand must be actively grabbing the top of a window in a closed fist.
+  - **Clasp Contact**: Second hand closes on top of the first hand into a fist within metric proximity ($D \le 0.14\text{m}$).
+  - **Thumb Orientation Alignment**: First hand must rotate along its radial axis so its closed thumb faces back toward the user viewpoint ($\mathbf{V}_{\text{thumb}} \cdot \mathbf{V}_{\text{user}} > 0.25$).
+  - **400ms Confirmation Hold & Abort**: Enforce a continuous 400ms hold timer with a visual danger red frame and circular progress arc. Separating hands ($> 14\text{cm}$) or releasing either fist before 400ms immediately aborts confirmation, resetting progress to 0% with no side effects. Window removal and display session teardown trigger only upon reaching the 400ms threshold.
+
+## 10. Headless JVM Testing & Architecture Invariants
+- **Null-Safe Context Defaults for Pure JVM Testing**: `android.content.Context` is an abstract class in Android SDK stubs, not an interface (`Proxy.newProxyInstance` fails with `IllegalArgumentException`). Renderer, tracking, and manager classes must declare `context: Context? = null` with default parameter when context APIs are not actively invoked during rendering, allowing headless JVM unit tests to instantiate components directly without Robolectric or bytecode-instrumented mocks.
 
 
 
