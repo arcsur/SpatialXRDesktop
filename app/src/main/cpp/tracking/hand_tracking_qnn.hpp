@@ -104,6 +104,10 @@ public:
         return isLeft ? leftOpenHand_ : rightOpenHand_;
     }
 
+    // Window Close Clasp Mechanism
+    bool isThumbFacingViewpoint(bool isLeft, const std::array<float, 3>& viewDir = {0.0f, 0.0f, 1.0f}) const;
+    bool detectTwoHandClaspClose(bool primaryIsLeft, float maxClaspDistanceMeters = 0.14f) const;
+
     // Task 3.2: Look-at-Palm Detector
     static bool isLookingAtPalm(const HandSkeleton& hand, const std::array<float, 3>& gazeDirection = {0.0f, 0.0f, -1.0f});
 

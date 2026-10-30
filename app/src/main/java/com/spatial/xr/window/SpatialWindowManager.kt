@@ -205,7 +205,12 @@ class SpatialWindowManager(
     }
 
     fun removeWindow(windowId: Int) {
-        windows.remove(windowId)
+        val win = windows.remove(windowId)
+        if (win != null) {
+            virtualDisplayHost?.releaseDisplaySession(win.displaySessionId)
+        }
+        repositionSessions.remove(windowId)
+        twoHandResizeSessions.remove(windowId)
         mruStack.remove(windowId)
         if (focusedWindowId == windowId) {
             focusedWindowId = mruStack.firstOrNull()

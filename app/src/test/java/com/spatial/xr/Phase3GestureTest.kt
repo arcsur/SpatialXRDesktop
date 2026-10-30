@@ -363,4 +363,179 @@ class Phase3GestureTest {
         dual.updateLeft(isOpen = false, isFist = true, isOverWin = true)
         assertEquals("Left hand triggers grab as the same hand that was open over window", true, dual.activeGrabHandIsLeft)
     }
+
+    @Test
+    fun testWindowGrabOnlyArmsAtTopOfWindow() {
+        val winW = 1.0f
+        val winH = 0.6f
+
+        // 1. Aiming at top edge (localY = 0.28m, localX = 0.0m)
+        val hitTop = com.spatial.xr.window.WindowInputInjector.isTopGrabBarHitWithSlack(
+            localX = 0.0f, localY = 0.28f,
+            quadWidthMeters = winW, quadHeightMeters = winH,
+            barThicknessMeters = 0.16f, slackMeters = 0.20f
+        )
+        assertTrue("Aiming at top of window arms grab", hitTop)
+
+        // 2. Aiming at top slack above window (localY = 0.38m, localX = 0.1m)
+        val hitTopSlack = com.spatial.xr.window.WindowInputInjector.isTopGrabBarHitWithSlack(
+            localX = 0.1f, localY = 0.38f,
+            quadWidthMeters = winW, quadHeightMeters = winH,
+            barThicknessMeters = 0.16f, slackMeters = 0.20f
+        )
+        assertTrue("Aiming within slack above window top arms grab", hitTopSlack)
+
+        // 3. Aiming at center of window (localY = 0.0m, localX = 0.0m)
+        val hitCenter = com.spatial.xr.window.WindowInputInjector.isTopGrabBarHitWithSlack(
+            localX = 0.0f, localY = 0.0f,
+            quadWidthMeters = winW, quadHeightMeters = winH,
+            barThicknessMeters = 0.16f, slackMeters = 0.20f
+        )
+        assertFalse("Aiming at center of window body must NOT arm grab", hitCenter)
+
+        // 4. Aiming at bottom of window (localY = -0.25m, localX = 0.0m)
+        val hitBottom = com.spatial.xr.window.WindowInputInjector.isTopGrabBarHitWithSlack(
+            localX = 0.0f, localY = -0.25f,
+            quadWidthMeters = winW, quadHeightMeters = winH,
+            barThicknessMeters = 0.16f, slackMeters = 0.20f
+        )
+        assertFalse("Aiming at bottom of window must NOT arm grab", hitBottom)
+    }
+
+    private fun createMockSurfaceHolder(): android.view.SurfaceHolder {
+        return java.lang.reflect.Proxy.newProxyInstance(
+            android.view.SurfaceHolder::class.java.classLoader,
+            arrayOf(android.view.SurfaceHolder::class.java)
+        ) { _, _, _ -> null } as android.view.SurfaceHolder
+    }
+
+    @Test
+    fun testTwoHandClaspCloseConfirmationAndExecution() {
+        val wm = com.spatial.xr.window.SpatialWindowManager()
+        wm.createWindow(1, "com.example.app", 101)
+
+        val holder = createMockSurfaceHolder()
+        val renderer = com.spatial.xr.display.SpatialStereoRenderer(surfaceHolder = holder, windowManager = wm)
+
+        // Primary hand (Left) grabs window 1 by the top
+        renderer.leftGrabState.isGrabbingWindow = true
+        renderer.leftGrabState.grabbedWindowId = 1
+        renderer.leftHandInfo.isTracked = true
+        renderer.leftHandInfo.isFist = true
+        renderer.smoothLeftHandPos[0] = 0.0f
+        renderer.smoothLeftHandPos[1] = 0.1f
+        renderer.smoothLeftHandPos[2] = -0.50f
+
+        // Secondary hand (Right) approaches and closes on top of left hand at distance ~5cm (< 14cm)
+        renderer.rightHandInfo.isTracked = true
+        renderer.rightHandInfo.isFist = true
+        renderer.smoothRightHandPos[0] = 0.03f
+        renderer.smoothRightHandPos[1] = 0.12f
+        renderer.smoothRightHandPos[2] = -0.48f
+
+        // Primary thumb facing viewpoint
+        renderer.thumbFacingMockLeft = true
+
+        val t0 = 1000L
+        // 1. Initial clasp detection starts confirmation timer
+        renderer.processTwoHandClaspClose(t0)
+        assertTrue("Clasp close confirmation starts", renderer.isWindowCloseConfirming)
+        assertEquals(1, renderer.windowCloseTargetWindowId)
+        assertEquals(0f, renderer.windowCloseProgress, 1e-4f)
+        org.junit.Assert.assertNotNull(wm.getWindow(1))
+
+        // 2. 200ms elapsed: progress ~ 50%, window still open
+        renderer.processTwoHandClaspClose(t0 + 200L)
+        assertTrue(renderer.isWindowCloseConfirming)
+        assertEquals(0.5f, renderer.windowCloseProgress, 0.01f)
+        org.junit.Assert.assertNotNull(wm.getWindow(1))
+
+        // 3. Early release at 300ms: secondary hand opens -> aborted!
+        renderer.rightHandInfo.isFist = false
+        renderer.processTwoHandClaspClose(t0 + 300L)
+        assertFalse("Opening secondary hand aborts close", renderer.isWindowCloseConfirming)
+        assertEquals(0f, renderer.windowCloseProgress, 1e-4f)
+        org.junit.Assert.assertNotNull("Window remains open after abort", wm.getWindow(1))
+
+        // 4. Re-clasp and complete full 400ms hold -> Window closes!
+        renderer.rightHandInfo.isFist = true
+        val t1 = 2000L
+        renderer.processTwoHandClaspClose(t1)
+        assertTrue(renderer.isWindowCloseConfirming)
+
+        renderer.processTwoHandClaspClose(t1 + 200L)
+        assertEquals(0.5f, renderer.windowCloseProgress, 0.01f)
+
+        renderer.processTwoHandClaspClose(t1 + 400L)
+        assertFalse("Confirmation completes on 400ms threshold", renderer.isWindowCloseConfirming)
+        assertEquals(0f, renderer.windowCloseProgress, 1e-4f)
+        assertEquals("Window 1 is closed and removed from windowManager", null, wm.getWindow(1))
+        assertFalse("Grab session on hand is ended", renderer.leftGrabState.isGrabbingWindow)
+    }
+
+    @Test
+    fun testTwoHandClaspCloseInvertedThumbRejection() {
+        val wm = com.spatial.xr.window.SpatialWindowManager()
+        wm.createWindow(2, "com.example.doc", 102)
+
+        val holder = createMockSurfaceHolder()
+        val renderer = com.spatial.xr.display.SpatialStereoRenderer(surfaceHolder = holder, windowManager = wm)
+
+        renderer.rightGrabState.isGrabbingWindow = true
+        renderer.rightGrabState.grabbedWindowId = 2
+        renderer.rightHandInfo.isTracked = true
+        renderer.rightHandInfo.isFist = true
+        renderer.smoothRightHandPos[0] = 0.1f
+        renderer.smoothRightHandPos[1] = 0.0f
+        renderer.smoothRightHandPos[2] = -0.50f
+
+        // Left hand clasps on top (< 14cm)
+        renderer.leftHandInfo.isTracked = true
+        renderer.leftHandInfo.isFist = true
+        renderer.smoothLeftHandPos[0] = 0.12f
+        renderer.smoothLeftHandPos[1] = 0.01f
+        renderer.smoothLeftHandPos[2] = -0.49f
+
+        // Inverted thumb: closed thumb is facing away from user
+        renderer.thumbFacingMockRight = false
+
+        renderer.processTwoHandClaspClose(1000L)
+        assertFalse("Clasp close must be rejected if thumb is not facing user viewpoint", renderer.isWindowCloseConfirming)
+        org.junit.Assert.assertNotNull("Window 2 remains open", wm.getWindow(2))
+
+        // When thumb rotates to face user viewpoint:
+        renderer.thumbFacingMockRight = true
+        renderer.processTwoHandClaspClose(1000L)
+        assertTrue("Clasp close begins once thumb faces user viewpoint", renderer.isWindowCloseConfirming)
+    }
+
+    @Test
+    fun testTwoHandClaspCloseSeparationRejection() {
+        val wm = com.spatial.xr.window.SpatialWindowManager()
+        wm.createWindow(3, "com.example.media", 103)
+
+        val holder = createMockSurfaceHolder()
+        val renderer = com.spatial.xr.display.SpatialStereoRenderer(surfaceHolder = holder, windowManager = wm)
+
+        renderer.leftGrabState.isGrabbingWindow = true
+        renderer.leftGrabState.grabbedWindowId = 3
+        renderer.leftHandInfo.isTracked = true
+        renderer.leftHandInfo.isFist = true
+        renderer.smoothLeftHandPos[0] = -0.20f
+        renderer.smoothLeftHandPos[1] = 0.0f
+        renderer.smoothLeftHandPos[2] = -0.50f
+
+        // Right hand is also in a fist, but far away at x = 0.20m (dist = 0.40m > 0.14m)
+        renderer.rightHandInfo.isTracked = true
+        renderer.rightHandInfo.isFist = true
+        renderer.smoothRightHandPos[0] = 0.20f
+        renderer.smoothRightHandPos[1] = 0.0f
+        renderer.smoothRightHandPos[2] = -0.50f
+
+        renderer.thumbFacingMockLeft = true
+
+        renderer.processTwoHandClaspClose(1000L)
+        assertFalse("Separated fists must NOT trigger clasp close", renderer.isWindowCloseConfirming)
+        org.junit.Assert.assertNotNull(wm.getWindow(3))
+    }
 }

@@ -275,6 +275,83 @@ void testFistAndOpenHandDetection() {
     std::cout << "[PASS] testFistAndOpenHandDetection\n";
 }
 
+void testThumbFacingViewpointAndClaspClose() {
+    HandTrackingQnn tracker;
+    tracker.initialize();
+
+    // 1. Setup primary fist (right hand) at (0.05, -0.05, -0.50)
+    std::array<Joint3D, JOINT_COUNT> rightFist{};
+    rightFist[WRIST] = {0.05f, -0.05f, -0.50f, 1.0f};
+    rightFist[INDEX_FINGER_MCP] = {0.05f, 0.02f, -0.50f, 1.0f};
+    rightFist[INDEX_FINGER_PIP] = {0.05f, 0.05f, -0.50f, 1.0f};
+    rightFist[INDEX_FINGER_DIP] = {0.05f, 0.04f, -0.48f, 1.0f};
+    rightFist[INDEX_FINGER_TIP] = {0.05f, 0.02f, -0.48f, 1.0f};
+
+    rightFist[MIDDLE_FINGER_MCP] = {0.03f, 0.02f, -0.50f, 1.0f};
+    rightFist[MIDDLE_FINGER_PIP] = {0.03f, 0.05f, -0.50f, 1.0f};
+    rightFist[MIDDLE_FINGER_DIP] = {0.03f, 0.04f, -0.48f, 1.0f};
+    rightFist[MIDDLE_FINGER_TIP] = {0.03f, 0.02f, -0.48f, 1.0f};
+
+    rightFist[RING_FINGER_MCP] = {0.01f, 0.02f, -0.50f, 1.0f};
+    rightFist[RING_FINGER_PIP] = {0.01f, 0.05f, -0.50f, 1.0f};
+    rightFist[RING_FINGER_DIP] = {0.01f, 0.04f, -0.48f, 1.0f};
+    rightFist[RING_FINGER_TIP] = {0.01f, 0.02f, -0.48f, 1.0f};
+
+    rightFist[PINKY_MCP] = {-0.01f, 0.02f, -0.50f, 1.0f};
+    rightFist[PINKY_PIP] = {-0.01f, 0.04f, -0.50f, 1.0f};
+    rightFist[PINKY_DIP] = {-0.01f, 0.03f, -0.48f, 1.0f};
+    rightFist[PINKY_TIP] = {-0.01f, 0.02f, -0.48f, 1.0f};
+
+    // Thumb pointing toward user (+Z): thumb MCP at z = -0.46 (closer to user than index MCP at z = -0.50)
+    rightFist[THUMB_CMC] = {0.06f, -0.02f, -0.49f, 1.0f};
+    rightFist[THUMB_MCP] = {0.07f, 0.02f, -0.46f, 1.0f};
+    rightFist[THUMB_IP]  = {0.06f, 0.03f, -0.45f, 1.0f};
+    rightFist[THUMB_TIP] = {0.05f, 0.03f, -0.46f, 1.0f};
+
+    tracker.updateHandJoints(false, rightFist, 0.95f);
+    tracker.updateFistGesture(false);
+    assert(tracker.isFist(false));
+
+    // View direction towards user is +Z (0, 0, 1)
+    assert(tracker.isThumbFacingViewpoint(false, {0.0f, 0.0f, 1.0f}));
+
+    // 2. Setup secondary fist (left hand) closed on top of right hand at (0.07, -0.04, -0.48) (dist ~0.03m < 0.14m)
+    std::array<Joint3D, JOINT_COUNT> leftFist = rightFist;
+    leftFist[WRIST] = {0.07f, -0.04f, -0.48f, 1.0f};
+    leftFist[MIDDLE_FINGER_MCP] = {0.06f, 0.02f, -0.48f, 1.0f};
+    tracker.updateHandJoints(true, leftFist, 0.95f);
+    tracker.updateFistGesture(true);
+    assert(tracker.isFist(true));
+
+    // Both hands clasped with thumb facing user -> clasp close valid!
+    assert(tracker.detectTwoHandClaspClose(false, 0.14f));
+
+    // 3. Negative check: thumb rotated away from user (e.g. thumb points down -Z)
+    auto rightFistInvertedThumb = rightFist;
+    rightFistInvertedThumb[THUMB_MCP] = {0.07f, 0.02f, -0.54f, 1.0f};
+    rightFistInvertedThumb[THUMB_IP]  = {0.06f, 0.03f, -0.55f, 1.0f};
+    rightFistInvertedThumb[THUMB_TIP] = {0.05f, 0.03f, -0.54f, 1.0f};
+    tracker.updateHandJoints(false, rightFistInvertedThumb, 0.95f);
+    tracker.updateFistGesture(false);
+    assert(!tracker.isThumbFacingViewpoint(false, {0.0f, 0.0f, 1.0f}));
+    assert(!tracker.detectTwoHandClaspClose(false, 0.14f));
+
+    // Restore thumb facing user
+    tracker.updateHandJoints(false, rightFist, 0.95f);
+    tracker.updateFistGesture(false);
+    assert(tracker.detectTwoHandClaspClose(false, 0.14f));
+
+    // 4. Negative check: secondary hand separated (> 0.14m)
+    auto leftFistFar = leftFist;
+    leftFistFar[WRIST] = {0.30f, 0.0f, -0.50f, 1.0f};
+    leftFistFar[MIDDLE_FINGER_MCP] = {0.30f, 0.05f, -0.50f, 1.0f};
+    tracker.updateHandJoints(true, leftFistFar, 0.95f);
+    tracker.updateFistGesture(true);
+    assert(!tracker.detectTwoHandClaspClose(false, 0.14f));
+
+    std::cout << "[PASS] testThumbFacingViewpointAndClaspClose\n";
+}
+
 #ifndef SPATIAL_COMBINED_TEST_RUNNER
 int main() {
     std::cout << "--- Running Phase 3 Native Tests ---\n";
@@ -283,6 +360,7 @@ int main() {
     testTwoHandScaleAndLookAtPalm();
     testThumbAndIndexTrackingDots();
     testFistAndOpenHandDetection();
+    testThumbFacingViewpointAndClaspClose();
     std::cout << "All Phase 3 Native Tests Passed!\n";
     return 0;
 }

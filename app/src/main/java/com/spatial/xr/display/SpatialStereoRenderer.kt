@@ -21,10 +21,10 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 class SpatialStereoRenderer(
-    private val context: Context,
+    private val context: Context? = null,
     private val surfaceHolder: SurfaceHolder,
     private val windowManager: SpatialWindowManager,
-    private val launcherRepository: AppLauncherRepository
+    private val launcherRepository: AppLauncherRepository = AppLauncherRepository()
 ) : Thread("SpatialStereoRenderer") {
 
     @Volatile
@@ -83,8 +83,8 @@ class SpatialStereoRenderer(
 
     private val leftHandPos = FloatArray(3)
     private val rightHandPos = FloatArray(3)
-    private val smoothLeftHandPos = FloatArray(3)
-    private val smoothRightHandPos = FloatArray(3)
+    val smoothLeftHandPos = FloatArray(3)
+    val smoothRightHandPos = FloatArray(3)
     private var wasLeftHandPosValid = false
     private var wasRightHandPosValid = false
 
@@ -139,6 +139,18 @@ class SpatialStereoRenderer(
             else -> 0.98f             // fast arm movement
         }
         return current + diff * alpha
+    }
+
+    var isWindowCloseConfirming = false
+    var windowCloseProgress = 0f
+    var windowCloseTargetWindowId: Int? = null
+    var windowCloseStartTimestamp = 0L
+    var thumbFacingMockLeft = true
+    var thumbFacingMockRight = true
+
+    companion object {
+        const val WINDOW_CLOSE_CONFIRM_DELAY_MS = 400L
+        const val WINDOW_CLASP_MAX_DISTANCE_METERS = 0.14f
     }
 
     private var twoHandTransformActive = false
@@ -464,10 +476,15 @@ class SpatialStereoRenderer(
                     (rightGrabState.wasOpenOverWindowId == win.windowId)
             val isWinHovered = (win.windowId == hoveredWindowId)
             val isWinActive = singleHandResizeActive && win.windowId == singleHandResizeWindowId
+            val isWinClosing = isWindowCloseConfirming && windowCloseTargetWindowId == win.windowId
 
             // Window Frame
             paint.style = Paint.Style.STROKE
             when {
+                isWinClosing -> {
+                    paint.strokeWidth = 5.0f
+                    paint.color = Color.parseColor("#FFFF3B30") // Danger Red when clasp close is confirming
+                }
                 isWinFistGrabbed -> {
                     paint.strokeWidth = 4.5f
                     paint.color = Color.parseColor("#FF00FFFF") // Vivid active cyan glow when grabbed
@@ -486,6 +503,21 @@ class SpatialStereoRenderer(
                 }
             }
             canvas.drawPath(windowPath, paint)
+
+            // Closing confirmation progress arc
+            if (isWinClosing && windowCloseProgress > 0f) {
+                val midTopX = (pTL.first + pTR.first) * 0.5f
+                val midTopY = (pTL.second + pTR.second) * 0.5f
+                val arcRadius = 26f
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = 4.5f
+                paint.color = Color.parseColor("#80FF3B30")
+                canvas.drawCircle(midTopX, midTopY, arcRadius, paint)
+                paint.color = Color.parseColor("#FFFF3B30")
+                val sweepAngle = windowCloseProgress * 360f
+                val oval = RectF(midTopX - arcRadius, midTopY - arcRadius, midTopX + arcRadius, midTopY + arcRadius)
+                canvas.drawArc(oval, -90f, sweepAngle, false, paint)
+            }
 
             if (isGestureVisualsEnabled) {
                 // Diagonal corner-to-corner stretch guideline (Iron Man gesture)
@@ -893,10 +925,11 @@ class SpatialStereoRenderer(
                 else -> "R:🖐️"
             }
         } else "R:--"
+        val closeInfo = if (isWindowCloseConfirming) " • ⚠️ CLOSING ${(windowCloseProgress * 100).toInt()}%" else ""
         val grabInfo = if (leftGrabState.isGrabbingWindow || rightGrabState.isGrabbingWindow) " • ✊ 3D MOVE" else ""
         val handInfo = if (isHandsTracked) "🖐️ [$lStatus  $rStatus]" else "🖐️ OPTICAL TRACKING: ON"
         val pinchInfo = if (isPinching) " • 🤏 PINCH" else ""
-        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo$grabInfo", ox + 24f, oy + 32f, textPaint)
+        canvas.drawText("● SPATIAL XR DESKTOP [$eyeName] • $handInfo$pinchInfo$grabInfo$closeInfo", ox + 24f, oy + 32f, textPaint)
 
         textPaint.textAlign = Paint.Align.RIGHT
         textPaint.color = Color.parseColor("#70FFFFFF")
@@ -1117,6 +1150,9 @@ class SpatialStereoRenderer(
         processHandFistGrab(leftHandInfo, leftGrabState, rightGrabState, smoothLeftHandPos)
         processHandFistGrab(rightHandInfo, rightGrabState, leftGrabState, smoothRightHandPos)
 
+        // 2.5 Two-Hand Clasp Window Close Mechanism
+        processTwoHandClaspClose(System.currentTimeMillis())
+
         // 3. Two-Hand Corner Resize or Side Edge Rotation/Tilt
         val bothPinching = (leftHandInfo.isTracked && rightHandInfo.isTracked && leftHandInfo.isPinching && rightHandInfo.isPinching) ||
                 ((pinchMask and 3) == 3 && wasLeftPinchValid && wasRightPinchValid)
@@ -1213,7 +1249,28 @@ class SpatialStereoRenderer(
         return Math.abs(localX) <= (halfW + 0.05f) && Math.abs(localY) <= (halfH + 0.05f)
     }
 
-    private fun findWindowUnderHand(handInfo: HandRenderInfo, smoothHandPos: FloatArray): SpatialWindowManager.SpatialWindow? {
+    fun isScreenPointOverWindowTop(win: SpatialWindowManager.SpatialWindow, screenX: Float, screenY: Float): Boolean {
+        val cx = currentViewportW * 0.5f
+        val cy = currentViewportH * 0.5f
+        val focal = currentViewportH * 0.95f
+        val distZ = Math.abs(win.position.z).coerceAtLeast(0.4f)
+        val winScreenX = cx + (win.position.x / distZ) * focal
+        val winScreenY = cy - (win.position.y / distZ) * focal
+
+        val deltaScreenX = screenX - winScreenX
+        val deltaScreenY = screenY - winScreenY
+
+        val localX = (deltaScreenX / focal) * distZ
+        val localY = -(deltaScreenY / focal) * distZ
+
+        return WindowInputInjector.isTopGrabBarHitWithSlack(
+            localX, localY, win.widthMeters, win.heightMeters,
+            barThicknessMeters = 0.16f,
+            slackMeters = 0.20f
+        )
+    }
+
+    fun findWindowUnderHand(handInfo: HandRenderInfo, smoothHandPos: FloatArray): SpatialWindowManager.SpatialWindow? {
         val cx = currentViewportW * 0.5f
         val cy = currentViewportH * 0.5f
         val aimScreenX = cx + (handInfo.aimScreenX - 0.5f) * currentViewportW
@@ -1223,10 +1280,85 @@ class SpatialStereoRenderer(
         val handScreenY = cy + (hny - 0.5f) * currentViewportH
 
         val matchingWindows = windowManager.getAllWindows().filter { win ->
-            isScreenPointOverWindow(win, aimScreenX, aimScreenY) ||
-            isScreenPointOverWindow(win, handScreenX, handScreenY)
+            isScreenPointOverWindowTop(win, aimScreenX, aimScreenY) ||
+            isScreenPointOverWindowTop(win, handScreenX, handScreenY)
         }
         return matchingWindows.maxByOrNull { it.position.z }
+    }
+
+    fun isThumbFacingUserFallback(isLeft: Boolean): Boolean {
+        return if (isLeft) thumbFacingMockLeft else thumbFacingMockRight
+    }
+
+    fun processTwoHandClaspClose(currentTime: Long = System.currentTimeMillis()) {
+        val leftGrabbing = leftGrabState.isGrabbingWindow && leftGrabState.grabbedWindowId != null
+        val rightGrabbing = rightGrabState.isGrabbingWindow && rightGrabState.grabbedWindowId != null
+
+        // Must have exactly one hand grabbing a window
+        if (!leftGrabbing && !rightGrabbing) {
+            isWindowCloseConfirming = false
+            windowCloseProgress = 0f
+            windowCloseTargetWindowId = null
+            windowCloseStartTimestamp = 0L
+            return
+        }
+
+        val primaryIsLeft = leftGrabbing
+        val activeGrabState = if (primaryIsLeft) leftGrabState else rightGrabState
+        val targetWinId = activeGrabState.grabbedWindowId ?: return
+        val primaryHand = if (primaryIsLeft) leftHandInfo else rightHandInfo
+        val secondaryHand = if (primaryIsLeft) rightHandInfo else leftHandInfo
+        val primaryPos = if (primaryIsLeft) smoothLeftHandPos else smoothRightHandPos
+        val secondaryPos = if (primaryIsLeft) smoothRightHandPos else smoothLeftHandPos
+
+        // Both hands must be tracked and in fists
+        val bothTracked = primaryHand.isTracked && secondaryHand.isTracked
+        val bothFists = primaryHand.isFist && secondaryHand.isFist
+
+        val dx = primaryPos[0] - secondaryPos[0]
+        val dy = primaryPos[1] - secondaryPos[1]
+        val dz = primaryPos[2] - secondaryPos[2]
+        val handDist = Math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
+        val withinClaspDist = handDist <= WINDOW_CLASP_MAX_DISTANCE_METERS
+
+        val thumbFacingViewpoint = if (NativeBridge.isNativeLoaded()) {
+            NativeBridge.nativeIsThumbFacingViewpoint(primaryIsLeft)
+        } else {
+            isThumbFacingUserFallback(primaryIsLeft)
+        }
+
+        val isClaspValid = bothTracked && bothFists && withinClaspDist && thumbFacingViewpoint
+
+        if (isClaspValid) {
+            if (!isWindowCloseConfirming || windowCloseTargetWindowId != targetWinId) {
+                isWindowCloseConfirming = true
+                windowCloseTargetWindowId = targetWinId
+                windowCloseStartTimestamp = currentTime
+                windowCloseProgress = 0f
+            } else {
+                val elapsed = currentTime - windowCloseStartTimestamp
+                windowCloseProgress = (elapsed.toFloat() / WINDOW_CLOSE_CONFIRM_DELAY_MS).coerceIn(0f, 1f)
+
+                if (elapsed >= WINDOW_CLOSE_CONFIRM_DELAY_MS) {
+                    // Gesture confirmed: close the window!
+                    windowManager.removeWindow(targetWinId)
+                    windowManager.endWindowGrabReposition(targetWinId)
+                    activeGrabState.isGrabbingWindow = false
+                    activeGrabState.grabbedWindowId = null
+                    isWindowCloseConfirming = false
+                    windowCloseProgress = 0f
+                    windowCloseTargetWindowId = null
+                    windowCloseStartTimestamp = 0L
+                }
+            }
+        } else {
+            if (isWindowCloseConfirming) {
+                isWindowCloseConfirming = false
+                windowCloseProgress = 0f
+                windowCloseTargetWindowId = null
+                windowCloseStartTimestamp = 0L
+            }
+        }
     }
 
     private fun processHandFistGrab(
