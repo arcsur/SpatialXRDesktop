@@ -5,13 +5,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
 import android.hardware.display.DisplayManager
 import android.hardware.usb.UsbManager
-import android.media.ImageReader
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -48,7 +43,6 @@ class MainActivity : AppCompatActivity(),
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1001
         private val REQUIRED_PERMISSIONS = arrayOf(
-            Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
         )
     }
@@ -432,7 +426,7 @@ class MainActivity : AppCompatActivity(),
             if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 onPermissionsGranted()
             } else {
-                Toast.makeText(this, "Permissions required for camera/audio tracking", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Microphone permission required for AI voice assistant", Toast.LENGTH_LONG).show()
             }
         }
     }

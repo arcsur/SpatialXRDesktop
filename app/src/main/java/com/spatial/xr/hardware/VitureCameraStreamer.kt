@@ -1,26 +1,15 @@
 package com.spatial.xr.hardware
 
-import android.Manifest
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.graphics.ImageFormat
-import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraDevice
-import android.hardware.camera2.CameraManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
-import android.media.ImageReader
 import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.spatial.xr.bridge.NativeBridge
 import com.spatial.xr.tracking.MediaPipeHandTracker
 import java.util.concurrent.atomic.AtomicBoolean
@@ -54,12 +43,6 @@ class VitureCameraStreamer(
     private var glassesStreamThread: Thread? = null
     private var mediaPipeTracker: MediaPipeHandTracker? = null
 
-    // Fallback Camera2 tracking (only active when glasses are disconnected)
-    private var cameraDevice: CameraDevice? = null
-    private var captureSession: CameraCaptureSession? = null
-    private var imageReader: ImageReader? = null
-    private var backgroundThread: HandlerThread? = null
-    private var backgroundHandler: Handler? = null
 
     private var onFrameProcessedListener: ((Boolean) -> Unit)? = null
 
@@ -87,11 +70,8 @@ class VitureCameraStreamer(
                 checkAndConnectDevices()
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
                 if (device != null && device.vendorId == VITURE_VENDOR_ID && device.productId in VITURE_PIDS) {
-                    Log.i(TAG, "VITURE glasses detached: ${device.productName}. Activating Camera2 fallback.")
+                    Log.i(TAG, "VITURE glasses detached: ${device.productName}.")
                     stopGlassesStreaming()
-                    if (isRunning.get()) {
-                        startCamera2Stream()
-                    }
                 }
             }
         }
@@ -116,15 +96,12 @@ class VitureCameraStreamer(
             context.registerReceiver(usbReceiver, filter)
         }
 
-        startBackgroundThread()
-
         val glasses = findVitureGlassesDevice()
         if (glasses != null) {
             Log.i(TAG, "VITURE glasses detected on startup: ${glasses.productName}")
             checkAndConnectDevices()
         } else {
-            Log.i(TAG, "No glasses attached yet: starting phone Camera2 fallback.")
-            startCamera2Stream()
+            Log.i(TAG, "No glasses attached yet. Waiting for USB attachment.")
         }
     }
 
@@ -136,8 +113,6 @@ class VitureCameraStreamer(
         } catch (_: Exception) {}
 
         stopGlassesStreaming()
-        stopCamera2Stream()
-        stopBackgroundThread()
 
         mediaPipeTracker?.close()
         mediaPipeTracker = null
@@ -152,10 +127,6 @@ class VitureCameraStreamer(
                 startGlassesStreaming(glasses)
             } else {
                 requestDevicePermission(glasses)
-            }
-        } else {
-            if (cameraDevice == null && isRunning.get() && !isGlassesStreaming.get()) {
-                startCamera2Stream()
             }
         }
     }
@@ -229,8 +200,7 @@ class VitureCameraStreamer(
         }
 
         isGlassesStreaming.set(true)
-        Log.i(TAG, "VITURE Carina stereo cameras active. Disabling phone Camera2 fallback.")
-        stopCamera2Stream() // Immediately stop phone camera fallback!
+        Log.i(TAG, "VITURE Carina stereo cameras active.")
 
         glassesStreamThread = Thread({
             val frameBuf = ByteArray(1280 * 800)
@@ -298,136 +268,5 @@ class VitureCameraStreamer(
             cameraConnection?.close()
         } catch (_: Exception) {}
         cameraConnection = null
-    }
-
-    private fun startCamera2Stream() {
-        if (isGlassesStreaming.get()) {
-            Log.d(TAG, "Glasses camera already active. Skipping Camera2 fallback.")
-            return
-        }
-        if (cameraDevice != null) return
-
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "Camera permission not granted for Camera2 tracking")
-            return
-        }
-
-        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        try {
-            val frontCameraId = cameraManager.cameraIdList.firstOrNull { id ->
-                val chars = cameraManager.getCameraCharacteristics(id)
-                chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-            } ?: cameraManager.cameraIdList.firstOrNull() ?: return
-
-            val w = 640
-            val h = 480
-            imageReader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 2)
-            var camera2FrameCount = 0
-            imageReader?.setOnImageAvailableListener({ reader ->
-                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                try {
-                    val yPlane = image.planes[0]
-                    val rowStride = yPlane.rowStride
-                    val buffer = yPlane.buffer
-                    val yBytes = ByteArray(w * h)
-                    if (rowStride == w) {
-                        buffer.get(yBytes, 0, minOf(buffer.remaining(), w * h))
-                    } else {
-                        for (row in 0 until h) {
-                            val pos = row * rowStride
-                            if (pos + w <= buffer.limit()) {
-                                buffer.position(pos)
-                                buffer.get(yBytes, row * w, w)
-                            }
-                        }
-                    }
-
-                    camera2FrameCount++
-                    if (camera2FrameCount % 60 == 1) {
-                        Log.i(TAG, "Camera2 fallback frame received #$camera2FrameCount (${w}x${h})")
-                    }
-
-                    mediaPipeTracker?.processGrayscaleFrame(w, h, yBytes)
-                    onFrameProcessedListener?.invoke(true)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Camera2 frame read exception: ${e.message}")
-                } finally {
-                    image.close()
-                }
-            }, backgroundHandler)
-
-            cameraManager.openCamera(frontCameraId, object : CameraDevice.StateCallback() {
-                override fun onOpened(camera: CameraDevice) {
-                    Log.i(TAG, "Camera2 fallback device opened successfully (id=$frontCameraId)")
-                    cameraDevice = camera
-                    createCaptureSession()
-                }
-
-                override fun onDisconnected(camera: CameraDevice) {
-                    Log.w(TAG, "Camera2 fallback device disconnected (id=$frontCameraId)")
-                    camera.close()
-                    cameraDevice = null
-                }
-
-                override fun onError(camera: CameraDevice, error: Int) {
-                    Log.e(TAG, "Camera2 fallback device error: $error (id=$frontCameraId)")
-                    camera.close()
-                    cameraDevice = null
-                }
-            }, backgroundHandler)
-        } catch (e: Exception) {
-            Log.w(TAG, "Camera2 initialization exception: ${e.message}")
-        }
-    }
-
-    private fun createCaptureSession() {
-        val camera = cameraDevice ?: return
-        val readerSurface = imageReader?.surface ?: return
-
-        try {
-            camera.createCaptureSession(listOf(readerSurface), object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    captureSession = session
-                    val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                        addTarget(readerSurface)
-                    }
-                    session.setRepeatingRequest(request.build(), null, backgroundHandler)
-                    Log.i(TAG, "Camera2 fallback capture stream active @ 640x480")
-                }
-
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Log.w(TAG, "Camera2 configure failed")
-                }
-            }, backgroundHandler)
-        } catch (e: Exception) {
-            Log.w(TAG, "createCaptureSession error: ${e.message}")
-        }
-    }
-
-    private fun stopCamera2Stream() {
-        try {
-            captureSession?.close()
-            captureSession = null
-            cameraDevice?.close()
-            cameraDevice = null
-            imageReader?.close()
-            imageReader = null
-        } catch (_: Exception) {}
-    }
-
-    private fun startBackgroundThread() {
-        backgroundThread = HandlerThread("VitureCameraBackground").apply {
-            start()
-            backgroundHandler = Handler(looper)
-        }
-    }
-
-    private fun stopBackgroundThread() {
-        backgroundThread?.quitSafely()
-        try {
-            backgroundThread?.join(500)
-            backgroundThread = null
-            backgroundHandler = null
-        } catch (_: Exception) {}
     }
 }

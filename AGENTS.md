@@ -14,13 +14,13 @@
 - **BroadcastReceiver registration**: When listening for system USB events (`ACTION_USB_DEVICE_ATTACHED`) on API 33+, use `Context.RECEIVER_EXPORTED`.
 - **Filter Detach Events by Tracking PIDs**: VITURE glasses expose composite USB interfaces (e.g., microphone `0x1102`, tracking `0x1104`). Never check only `vendorId == VITURE_VENDOR_ID` on `ACTION_USB_DEVICE_DETACHED`. Always verify `device.productId in VITURE_PIDS` so audio re-enumeration does not terminate camera tracking.
 
-## 3. USB Tracking Cameras & Fallback Hierarchy
+## 3. USB Tracking Cameras & Exclusive Egocentric Streaming
 - **Validate `UsbRequest.initialize`**: Isochronous endpoints are not universally supported across all Android vendor HALs in Java `UsbRequest`. Always check:
   ```kotlin
   val req = UsbRequest()
   if (!req.initialize(connection, endpoint)) { req.close(); null }
   ```
-- **Primary vs. Fallback Camera Hierarchy**: Glasses USB tracking cameras (e.g. VITURE Carina stereo) are strictly primary. Phone Camera2 (selfie/front) is strictly a disconnected fallback that MUST immediately cease once glasses camera streams open.
+- **Exclusive Egocentric Glasses Streaming**: Glasses USB tracking cameras (e.g. VITURE Carina stereo) are the exclusive tracking input. Phone Camera2 (selfie/front) is completely removed as egocentric spatial tracking requires head-mounted cameras.
 
 ## 4. Hardware Connectivity & Wireless ADB
 - **Single USB-C Port Management**: When glasses occupy the physical USB-C port, always inspect wireless debugging via mDNS (`adb -s adb-<SERIAL>._adb-tls-connect._tcp ...`).
@@ -44,6 +44,6 @@
 ## 8. Dual-Camera Stereoscopic Depth Triangulation
 - **Asymmetric Stereo Pipeline over Dual ML Inferences**: Off-the-shelf mobile hand landmarkers (e.g. MediaPipe) are strictly monocular models. Never duplicate full neural network inference across both stereo camera frames ($2\times$ compute cost, drops frame rates to $\sim 15\text{ FPS}$, and magnifies depth noise from independent 2D keypoint jitter). Run 2D landmark inference exclusively on the primary camera feed (Left) and resolve metric depth via fast 1D epipolar disparity correlation on the secondary feed (Right).
 - **Zero-Copy Epipolar Disparity Search in C++**: Keep secondary camera frames resident in native C++ memory without JNI byte array allocations. Perform 1D horizontal Sum of Absolute Differences (SAD) with sub-pixel parabolic refinement across epipolar scanlines ($d \in [16, 115]\text{ px}$ for $[0.22\text{m}, 1.30\text{m}]$ reach) to triangulate physical metric depth ($Z = -\frac{f_{\text{px}} \cdot B}{d_{\text{sub}}}$).
-- **Graceful Monocular Fallback Hierarchy**: Maintain single-camera palm span perspective depth ($Z \propto -1 / S_{\text{palm}}$) strictly as a graceful fallback when the secondary camera frame is obstructed, feature patches fall out of bounds, or the system reverts to phone camera fallback.
+- **Graceful Monocular Fallback Hierarchy**: Maintain single-camera palm span perspective depth ($Z \propto -1 / S_{\text{palm}}$) strictly as a graceful fallback when the secondary camera frame is obstructed or feature patches fall out of bounds.
 
 
