@@ -481,4 +481,53 @@ bool HandTrackingQnn::computeTwoHandTransform(
     return true;
 }
 
+bool HandTrackingQnn::isThumbFacingViewpoint(bool isLeft, const std::array<float, 3>& viewDir) const {
+    const HandSkeleton& hand = isLeft ? leftHand_ : rightHand_;
+    if (!hand.isTracked) return false;
+
+    const auto& indexMcp = hand.joints[INDEX_FINGER_MCP];
+    const auto& thumbMcp = hand.joints[THUMB_MCP];
+    const auto& thumbIp  = hand.joints[THUMB_IP];
+
+    // Radial axis of thumb on the fist
+    float vx = (thumbMcp.x + thumbIp.x) * 0.5f - indexMcp.x;
+    float vy = (thumbMcp.y + thumbIp.y) * 0.5f - indexMcp.y;
+    float vz = (thumbMcp.z + thumbIp.z) * 0.5f - indexMcp.z;
+
+    float len = std::sqrt(vx * vx + vy * vy + vz * vz);
+    if (len < 1e-5f) return false;
+    vx /= len;
+    vy /= len;
+    vz /= len;
+
+    // View direction towards user (from hand to user viewpoint)
+    float dot = vx * viewDir[0] + vy * viewDir[1] + vz * viewDir[2];
+    return (dot > 0.25f);
+}
+
+bool HandTrackingQnn::detectTwoHandClaspClose(bool primaryIsLeft, float maxClaspDistanceMeters) const {
+    const HandSkeleton& primary = primaryIsLeft ? leftHand_ : rightHand_;
+    const HandSkeleton& secondary = primaryIsLeft ? rightHand_ : leftHand_;
+
+    if (!primary.isTracked || !secondary.isTracked) return false;
+    if (!isFist(primaryIsLeft) || !isFist(!primaryIsLeft)) return false;
+
+    float dWrist = euclideanDistance(primary.joints[WRIST], secondary.joints[WRIST]);
+    float dMcp = euclideanDistance(primary.joints[MIDDLE_FINGER_MCP], secondary.joints[MIDDLE_FINGER_MCP]);
+    float minHandDist = std::min(dWrist, dMcp);
+    if (minHandDist > maxClaspDistanceMeters) return false;
+
+    std::array<float, 3> toUser = { -primary.joints[WRIST].x, -primary.joints[WRIST].y, -primary.joints[WRIST].z };
+    float uLen = std::sqrt(toUser[0] * toUser[0] + toUser[1] * toUser[1] + toUser[2] * toUser[2]);
+    if (uLen > 1e-4f) {
+        toUser[0] /= uLen;
+        toUser[1] /= uLen;
+        toUser[2] /= uLen;
+    } else {
+        toUser = {0.0f, 0.0f, 1.0f};
+    }
+
+    return isThumbFacingViewpoint(primaryIsLeft, toUser);
+}
+
 } // namespace spatial::tracking
